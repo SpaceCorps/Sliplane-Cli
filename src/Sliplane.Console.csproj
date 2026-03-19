@@ -7,16 +7,21 @@
 
     <!-- dotnet tool settings -->
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>slipline</ToolCommandName>
+    <ToolCommandName>sliplane</ToolCommandName>
 
     <!-- NuGet package metadata -->
-    <PackageId>Slipline.Console</PackageId>
+    <PackageId>Sliplane.Console</PackageId>
     <Version>0.0.0-local</Version>
     <Authors>nielsbosma</Authors>
     <Description>CLI tool for the Sliplane API - manage servers, services, and projects</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/nielsbosma/Slipline.Console</RepositoryUrl>
+    <RepositoryUrl>https://github.com/nielsbosma/Sliplane.Console</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Spectre.Console.Cli" Version="0.49.1" />

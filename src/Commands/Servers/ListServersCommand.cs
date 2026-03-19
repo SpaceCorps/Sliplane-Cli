@@ -1,7 +1,7 @@
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands.Servers;
+namespace Sliplane.Console.Commands.Servers;
 
 public sealed class ListServersCommand : AsyncCommand<ApiSettings>
 {

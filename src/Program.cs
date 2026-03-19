@@ -1,9 +1,9 @@
-using Slipline.Console.Commands;
-using Slipline.Console.Commands.Credentials;
-using Slipline.Console.Commands.OAuth;
-using Slipline.Console.Commands.Projects;
-using Slipline.Console.Commands.Servers;
-using Slipline.Console.Commands.Services;
+using Sliplane.Console.Commands;
+using Sliplane.Console.Commands.Credentials;
+using Sliplane.Console.Commands.OAuth;
+using Sliplane.Console.Commands.Projects;
+using Sliplane.Console.Commands.Servers;
+using Sliplane.Console.Commands.Services;
 using Spectre.Console.Cli;
 
 var app = new CommandApp();

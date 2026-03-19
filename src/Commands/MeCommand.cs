@@ -1,7 +1,7 @@
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands;
+namespace Sliplane.Console.Commands;
 
 public sealed class MeCommand : AsyncCommand<ApiSettings>
 {

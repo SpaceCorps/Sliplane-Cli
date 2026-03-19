@@ -1,9 +1,9 @@
 using System.ComponentModel;
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands.Services;
+namespace Sliplane.Console.Commands.Services;
 
 public sealed class DeleteServiceCommand : AsyncCommand<DeleteServiceCommand.Settings>
 {

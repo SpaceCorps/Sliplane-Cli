@@ -1,9 +1,9 @@
 using System.ComponentModel;
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands.Servers;
+namespace Sliplane.Console.Commands.Servers;
 
 public sealed class DeleteServerCommand : AsyncCommand<DeleteServerCommand.Settings>
 {

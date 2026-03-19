@@ -18,9 +18,9 @@ jobs:
       with:
         dotnet-version: 10.0.x
     - name: Restore
-      run: dotnet restore src/Slipline.Console.csproj
+      run: dotnet restore src/Sliplane.Console.csproj
     - name: Build
-      run: dotnet build src/Slipline.Console.csproj --configuration Release --no-restore
+      run: dotnet build src/Sliplane.Console.csproj --configuration Release --no-restore
 
   publish:
     if: github.event_name == 'release'
@@ -35,8 +35,8 @@ jobs:
     - name: Set version from release tag
       run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
     - name: Restore
-      run: dotnet restore src/Slipline.Console.csproj
+      run: dotnet restore src/Sliplane.Console.csproj
     - name: Pack
-      run: dotnet pack src/Slipline.Console.csproj --configuration Release -p:Version=${{ env.VERSION }} --output ./nupkgs
+      run: dotnet pack src/Sliplane.Console.csproj --configuration Release -p:Version=${{ env.VERSION }} --output ./nupkgs
     - name: Publish to NuGet
       run: dotnet nuget push ./nupkgs/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json

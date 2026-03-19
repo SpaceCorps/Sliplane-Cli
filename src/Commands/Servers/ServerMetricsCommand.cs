@@ -1,8 +1,8 @@
 using System.ComponentModel;
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands.Servers;
+namespace Sliplane.Console.Commands.Servers;
 
 public sealed class ServerMetricsCommand : AsyncCommand<ServerMetricsCommand.Settings>
 {
@@ -13,7 +13,8 @@ public sealed class ServerMetricsCommand : AsyncCommand<ServerMetricsCommand.Set
         public required string ServerId { get; init; }
 
         [CommandOption("--range <RANGE>")]
-        [Description("Predefined time range: 10min, 1h, 24h, 7d")]
+        [Description("Predefined time range: 10min, 1h, 24h, 7d (default: 1h)")]
+        [DefaultValue("1h")]
         public string? Range { get; init; }
 
         [CommandOption("--from <TIMESTAMP>")]

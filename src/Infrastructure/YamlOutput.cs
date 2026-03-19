@@ -2,7 +2,7 @@ using System.Text.Json;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
-namespace Slipline.Console.Infrastructure;
+namespace Sliplane.Console.Infrastructure;
 
 public static class YamlOutput
 {

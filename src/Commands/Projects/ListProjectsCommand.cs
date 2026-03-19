@@ -1,7 +1,7 @@
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands.Projects;
+namespace Sliplane.Console.Commands.Projects;
 
 public sealed class ListProjectsCommand : AsyncCommand<ApiSettings>
 {

@@ -1,7 +1,7 @@
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands.Credentials;
+namespace Sliplane.Console.Commands.Credentials;
 
 public sealed class ListCredentialsCommand : AsyncCommand<ApiSettings>
 {

@@ -2,7 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
-namespace Slipline.Console.Infrastructure;
+namespace Sliplane.Console.Infrastructure;
 
 public sealed class SliplaneClient
 {

@@ -1,8 +1,8 @@
 using System.ComponentModel;
-using Slipline.Console.Infrastructure;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
 
-namespace Slipline.Console.Commands.OAuth;
+namespace Sliplane.Console.Commands.OAuth;
 
 public sealed class GetOAuthClientCommand : AsyncCommand<GetOAuthClientCommand.Settings>
 {
