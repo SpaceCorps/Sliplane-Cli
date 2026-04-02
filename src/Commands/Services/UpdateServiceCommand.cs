@@ -44,6 +44,14 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
         [Description("Auto-deploy on push")]
         public bool? AutoDeploy { get; init; }
 
+        [CommandOption("--deploy-include-paths <PATTERN>")]
+        [Description("Only deploy if changes in these paths (repeatable, replaces all)")]
+        public string[]? DeployIncludePaths { get; init; }
+
+        [CommandOption("--deploy-ignore-paths <PATTERN>")]
+        [Description("Skip deploy if changes only in these paths (repeatable, replaces all)")]
+        public string[]? DeployIgnorePaths { get; init; }
+
         [CommandOption("--registry-credential-id <ID>")]
         [Description("Registry credential ID")]
         public string? RegistryCredentialId { get; init; }
@@ -68,13 +76,13 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings)
     {
         var client = settings.CreateClient();
-        var body = BuildBody(settings);
+        var body = await BuildBodyAsync(client, settings);
         var result = await client.PatchAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}", body);
         YamlOutput.Write(result);
         return 0;
     }
 
-    private static Dictionary<string, object> BuildBody(Settings s)
+    private static async Task<Dictionary<string, object>> BuildBodyAsync(SliplaneClient client, Settings s)
     {
         var body = new Dictionary<string, object>();
 
@@ -82,22 +90,35 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
         if (!string.IsNullOrEmpty(s.Healthcheck)) body["healthcheck"] = s.Healthcheck;
         if (!string.IsNullOrEmpty(s.Cmd)) body["cmd"] = s.Cmd;
 
+        var deployment = new Dictionary<string, object>();
+        var needsDeploymentUrl = s.AutoDeploy.HasValue || s.DeployIncludePaths is not null || s.DeployIgnorePaths is not null;
+
         if (!string.IsNullOrEmpty(s.Image))
         {
-            var deployment = new Dictionary<string, object> { ["url"] = s.Image };
+            deployment["url"] = s.Image;
             if (!string.IsNullOrEmpty(s.RegistryCredentialId))
                 deployment["registryAuthenticationId"] = s.RegistryCredentialId;
-            body["deployment"] = deployment;
         }
         else if (!string.IsNullOrEmpty(s.Repo))
         {
-            var deployment = new Dictionary<string, object> { ["url"] = s.Repo };
+            deployment["url"] = s.Repo;
             if (!string.IsNullOrEmpty(s.Branch)) deployment["branch"] = s.Branch;
             if (!string.IsNullOrEmpty(s.DockerfilePath)) deployment["dockerfilePath"] = s.DockerfilePath;
             if (!string.IsNullOrEmpty(s.DockerContext)) deployment["dockerContext"] = s.DockerContext;
-            if (s.AutoDeploy.HasValue) deployment["autoDeploy"] = s.AutoDeploy.Value;
-            body["deployment"] = deployment;
         }
+        else if (needsDeploymentUrl)
+        {
+            // API requires url in deployment object; fetch current service to carry it over
+            var current = await client.GetAsync($"projects/{s.ProjectId}/services/{s.ServiceId}");
+            var dep = current.RootElement.GetProperty("deployment");
+            deployment["url"] = dep.GetProperty("url").GetString()!;
+        }
+
+        if (s.AutoDeploy.HasValue) deployment["autoDeploy"] = s.AutoDeploy.Value;
+        if (s.DeployIncludePaths is not null) deployment["includePaths"] = s.DeployIncludePaths;
+        if (s.DeployIgnorePaths is not null) deployment["ignorePaths"] = s.DeployIgnorePaths;
+
+        if (deployment.Count > 0) body["deployment"] = deployment;
 
         var envVars = new List<Dictionary<string, object>>();
         if (s.Env is not null)

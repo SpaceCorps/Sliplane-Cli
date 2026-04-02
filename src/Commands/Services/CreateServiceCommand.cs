@@ -45,6 +45,14 @@ public sealed class CreateServiceCommand : AsyncCommand<CreateServiceCommand.Set
         [Description("Auto-deploy on push (default: true)")]
         public bool? AutoDeploy { get; init; }
 
+        [CommandOption("--deploy-include-paths <PATTERN>")]
+        [Description("Only deploy if changes in these paths (repeatable)")]
+        public string[]? DeployIncludePaths { get; init; }
+
+        [CommandOption("--deploy-ignore-paths <PATTERN>")]
+        [Description("Skip deploy if changes only in these paths (repeatable)")]
+        public string[]? DeployIgnorePaths { get; init; }
+
         [CommandOption("--registry-credential-id <ID>")]
         [Description("Registry credential ID for private images")]
         public string? RegistryCredentialId { get; init; }
@@ -109,6 +117,8 @@ public sealed class CreateServiceCommand : AsyncCommand<CreateServiceCommand.Set
             if (!string.IsNullOrEmpty(s.DockerfilePath)) deployment["dockerfilePath"] = s.DockerfilePath;
             if (!string.IsNullOrEmpty(s.DockerContext)) deployment["dockerContext"] = s.DockerContext;
             if (s.AutoDeploy.HasValue) deployment["autoDeploy"] = s.AutoDeploy.Value;
+            if (s.DeployIncludePaths is not null) deployment["includePaths"] = s.DeployIncludePaths;
+            if (s.DeployIgnorePaths is not null) deployment["ignorePaths"] = s.DeployIgnorePaths;
             body["deployment"] = deployment;
         }
 
