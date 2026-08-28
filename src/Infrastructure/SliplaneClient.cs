@@ -35,10 +35,7 @@ public sealed class SliplaneClient
         var content = body is null ? null : new StringContent(JsonSerializer.Serialize(body, JsonOptions), Encoding.UTF8, "application/json");
         var response = await _http.PostAsync(path, content);
         await EnsureSuccess(response);
-        if (response.Content.Headers.ContentLength == 0 || response.StatusCode == System.Net.HttpStatusCode.NoContent || response.StatusCode == System.Net.HttpStatusCode.Accepted)
-            return JsonDocument.Parse("{}");
-        var stream = await response.Content.ReadAsStreamAsync();
-        return await JsonDocument.ParseAsync(stream);
+        return await ReadJson(response);
     }
 
     public async Task<JsonDocument> PatchAsync(string path, object body)
@@ -54,6 +51,21 @@ public sealed class SliplaneClient
     {
         var response = await _http.DeleteAsync(path);
         await EnsureSuccess(response);
+    }
+
+    public async Task<JsonDocument> DeleteWithResponseAsync(string path)
+    {
+        var response = await _http.DeleteAsync(path);
+        await EnsureSuccess(response);
+        return await ReadJson(response);
+    }
+
+    private static async Task<JsonDocument> ReadJson(HttpResponseMessage response)
+    {
+        if (response.StatusCode == System.Net.HttpStatusCode.NoContent || response.Content.Headers.ContentLength == 0)
+            return JsonDocument.Parse("{}");
+        var body = await response.Content.ReadAsStringAsync();
+        return string.IsNullOrWhiteSpace(body) ? JsonDocument.Parse("{}") : JsonDocument.Parse(body);
     }
 
     private static async Task EnsureSuccess(HttpResponseMessage response)

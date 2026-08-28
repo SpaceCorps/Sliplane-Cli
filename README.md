@@ -46,6 +46,7 @@ sliplane <command> [options]
 | `servers create` | Create a new server |
 | `servers delete` | Delete a server |
 | `servers rescale` | Rescale a server (scale up only) |
+| `servers rescale-disk` | Grow a server's data disk |
 | `servers metrics` | Get server metrics |
 | `servers volumes` | List server volumes |
 | `servers create-volume` | Create a volume on a server |
@@ -63,6 +64,31 @@ sliplane <command> [options]
 | `services events` | Get service events |
 | `services add-domain` | Add a custom domain |
 | `services remove-domain` | Remove a custom domain |
+| **Postgres** | |
+| `postgres list` | List all Postgres databases |
+| `postgres get` | Get Postgres database details |
+| `postgres create` | Create a new Postgres database |
+| `postgres update` | Rename, rescale, or set the IP allow list |
+| `postgres delete` | Delete a Postgres database |
+| `postgres pause` | Pause a Postgres database |
+| `postgres unpause` | Unpause a paused Postgres database |
+| `postgres restart` | Restart a Postgres database |
+| `postgres rotate-credentials` | Rotate generated credentials |
+| `postgres logs` | List recent server logs |
+| `postgres connections` | List current active connections |
+| `postgres relation-sizes` | List current table and index sizes |
+| `postgres slow-queries` | List current slow queries |
+| `postgres top-queries` | List current top queries by call count |
+| `postgres restore-window` | Get the point-in-time restore window |
+| `postgres restore` | Restore to a point in time (creates a new database) |
+| **Buckets** | |
+| `buckets list` | List all buckets |
+| `buckets create` | Create an S3-compatible bucket |
+| `buckets update` | Enable or disable bucket versioning |
+| `buckets delete` | Schedule a bucket for deletion |
+| `buckets keys` | List bucket access keys |
+| `buckets create-key` | Create a bucket access key |
+| `buckets delete-key` | Delete a bucket access key |
 | **Credentials** | |
 | `credentials list` | List all registry credentials |
 | `credentials get` | Get registry credentials details |
@@ -92,7 +118,19 @@ sliplane services deploy --service-id abc123
 
 # View service logs
 sliplane services logs --service-id abc123
+
+# Create a Postgres database
+sliplane postgres create --name my-db --instance-type base --region ger
+
+# Restrict a database to a single network
+sliplane postgres update --postgres-id pg_abc123 --ip-allow 203.0.113.0/24=office
+
+# Create a bucket and an access key for it
+sliplane buckets create --name my-app-uploads --region ger
+sliplane buckets create-key --bucket-id sb_abc123 --name "Production uploads"
 ```
+
+> The PostgreSQL major version on `postgres create` is `--pg-version`; `--version` is reserved by the CLI itself.
 
 ## Output
 

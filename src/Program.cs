@@ -1,6 +1,8 @@
 using Sliplane.Console.Commands;
+using Sliplane.Console.Commands.Buckets;
 using Sliplane.Console.Commands.Credentials;
 using Sliplane.Console.Commands.OAuth;
+using Sliplane.Console.Commands.Postgres;
 using Sliplane.Console.Commands.Projects;
 using Sliplane.Console.Commands.Servers;
 using Sliplane.Console.Commands.Services;
@@ -41,6 +43,8 @@ app.Configure(config =>
             .WithDescription("Rescale a server (scale up only)");
         servers.AddCommand<ServerMetricsCommand>("metrics")
             .WithDescription("Get server metrics");
+        servers.AddCommand<RescaleServerDiskCommand>("rescale-disk")
+            .WithDescription("Rescale a server's data disk (grow only)");
         servers.AddCommand<ListServerVolumesCommand>("volumes")
             .WithDescription("List server volumes");
         servers.AddCommand<CreateServerVolumeCommand>("create-volume")
@@ -76,6 +80,62 @@ app.Configure(config =>
             .WithDescription("Add a custom domain");
         services.AddCommand<RemoveDomainCommand>("remove-domain")
             .WithDescription("Remove a custom domain");
+    });
+
+    config.AddBranch("postgres", postgres =>
+    {
+        postgres.SetDescription("Manage managed Postgres databases");
+        postgres.AddCommand<ListPostgresCommand>("list")
+            .WithDescription("List all Postgres databases");
+        postgres.AddCommand<GetPostgresCommand>("get")
+            .WithDescription("Get Postgres database details");
+        postgres.AddCommand<CreatePostgresCommand>("create")
+            .WithDescription("Create a new Postgres database");
+        postgres.AddCommand<UpdatePostgresCommand>("update")
+            .WithDescription("Update a Postgres database (rename, rescale, IP allow list)");
+        postgres.AddCommand<DeletePostgresCommand>("delete")
+            .WithDescription("Delete a Postgres database");
+        postgres.AddCommand<PausePostgresCommand>("pause")
+            .WithDescription("Pause a Postgres database");
+        postgres.AddCommand<UnpausePostgresCommand>("unpause")
+            .WithDescription("Unpause a paused Postgres database");
+        postgres.AddCommand<RestartPostgresCommand>("restart")
+            .WithDescription("Restart a Postgres database");
+        postgres.AddCommand<RotatePostgresCredentialsCommand>("rotate-credentials")
+            .WithDescription("Rotate generated Postgres credentials");
+        postgres.AddCommand<PostgresLogsCommand>("logs")
+            .WithDescription("List recent Postgres server logs");
+        postgres.AddCommand<PostgresActiveConnectionsCommand>("connections")
+            .WithDescription("List current active connections");
+        postgres.AddCommand<PostgresRelationSizesCommand>("relation-sizes")
+            .WithDescription("List current table and index sizes");
+        postgres.AddCommand<PostgresSlowQueriesCommand>("slow-queries")
+            .WithDescription("List current slow queries");
+        postgres.AddCommand<PostgresTopQueriesCommand>("top-queries")
+            .WithDescription("List current top queries by call count");
+        postgres.AddCommand<PostgresRestoreWindowCommand>("restore-window")
+            .WithDescription("Get the point-in-time restore window");
+        postgres.AddCommand<RestorePostgresCommand>("restore")
+            .WithDescription("Restore a database to a point in time (creates a new database)");
+    });
+
+    config.AddBranch("buckets", buckets =>
+    {
+        buckets.SetDescription("Manage S3-compatible object storage buckets");
+        buckets.AddCommand<ListBucketsCommand>("list")
+            .WithDescription("List all buckets");
+        buckets.AddCommand<CreateBucketCommand>("create")
+            .WithDescription("Create a bucket");
+        buckets.AddCommand<UpdateBucketCommand>("update")
+            .WithDescription("Enable or disable bucket versioning");
+        buckets.AddCommand<DeleteBucketCommand>("delete")
+            .WithDescription("Schedule a bucket for deletion");
+        buckets.AddCommand<ListBucketKeysCommand>("keys")
+            .WithDescription("List bucket access keys");
+        buckets.AddCommand<CreateBucketKeyCommand>("create-key")
+            .WithDescription("Create a bucket access key");
+        buckets.AddCommand<DeleteBucketKeyCommand>("delete-key")
+            .WithDescription("Delete a bucket access key");
     });
 
     config.AddBranch("credentials", credentials =>

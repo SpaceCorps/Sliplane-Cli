@@ -16,12 +16,18 @@ public sealed class RescaleServerCommand : AsyncCommand<RescaleServerCommand.Set
         [CommandOption("--instance-type <TYPE>")]
         [Description("New instance type (can only scale up)")]
         public required string InstanceType { get; init; }
+
+        [CommandOption("--billing-cycle <CYCLE>")]
+        [Description("Billing cycle for the rescaled server: hourly, monthly, yearly")]
+        public string? BillingCycle { get; init; }
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings)
     {
         var client = settings.CreateClient();
-        await client.PostAsync($"servers/{settings.ServerId}", new { instanceType = settings.InstanceType });
+        var body = new Dictionary<string, object> { ["instanceType"] = settings.InstanceType };
+        if (!string.IsNullOrEmpty(settings.BillingCycle)) body["billingCycle"] = settings.BillingCycle;
+        await client.PostAsync($"servers/{settings.ServerId}", body);
         AnsiConsole.MarkupLine("[green]Rescale request accepted.[/]");
         return 0;
     }
