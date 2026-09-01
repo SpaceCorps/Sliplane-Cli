@@ -62,6 +62,9 @@ sliplane <command> [options]
 | `services logs` | Get service logs |
 | `services metrics` | Get service metrics |
 | `services events` | Get service events |
+| `services list-env` | List environment variables |
+| `services set-env` | Create or replace an environment variable |
+| `services delete-env` | Delete an environment variable |
 | `services add-domain` | Add a custom domain |
 | `services remove-domain` | Remove a custom domain |
 | **Postgres** | |
@@ -86,6 +89,9 @@ sliplane <command> [options]
 | `buckets create` | Create an S3-compatible bucket |
 | `buckets update` | Enable or disable bucket versioning |
 | `buckets delete` | Schedule a bucket for deletion |
+| `buckets cors` | Get the CORS configuration |
+| `buckets set-cors` | Replace the CORS configuration |
+| `buckets delete-cors` | Delete the CORS configuration |
 | `buckets keys` | List bucket access keys |
 | `buckets create-key` | Create a bucket access key |
 | `buckets delete-key` | Delete a bucket access key |

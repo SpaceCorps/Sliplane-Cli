@@ -76,6 +76,12 @@ app.Configure(config =>
             .WithDescription("Get service metrics");
         services.AddCommand<ServiceEventsCommand>("events")
             .WithDescription("Get service events");
+        services.AddCommand<ListServiceEnvCommand>("list-env")
+            .WithDescription("List service environment variables");
+        services.AddCommand<SetServiceEnvCommand>("set-env")
+            .WithDescription("Create or replace a service environment variable");
+        services.AddCommand<DeleteServiceEnvCommand>("delete-env")
+            .WithDescription("Delete a service environment variable");
         services.AddCommand<AddDomainCommand>("add-domain")
             .WithDescription("Add a custom domain");
         services.AddCommand<RemoveDomainCommand>("remove-domain")
@@ -130,6 +136,12 @@ app.Configure(config =>
             .WithDescription("Enable or disable bucket versioning");
         buckets.AddCommand<DeleteBucketCommand>("delete")
             .WithDescription("Schedule a bucket for deletion");
+        buckets.AddCommand<GetBucketCorsCommand>("cors")
+            .WithDescription("Get the bucket CORS configuration");
+        buckets.AddCommand<SetBucketCorsCommand>("set-cors")
+            .WithDescription("Replace the bucket CORS configuration");
+        buckets.AddCommand<DeleteBucketCorsCommand>("delete-cors")
+            .WithDescription("Delete the bucket CORS configuration");
         buckets.AddCommand<ListBucketKeysCommand>("keys")
             .WithDescription("List bucket access keys");
         buckets.AddCommand<CreateBucketKeyCommand>("create-key")

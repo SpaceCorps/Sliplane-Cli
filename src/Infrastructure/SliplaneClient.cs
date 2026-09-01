@@ -47,6 +47,14 @@ public sealed class SliplaneClient
         return await JsonDocument.ParseAsync(stream);
     }
 
+    public async Task<JsonDocument> PutAsync(string path, object body)
+    {
+        var content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), Encoding.UTF8, "application/json");
+        var response = await _http.PutAsync(path, content);
+        await EnsureSuccess(response);
+        return await ReadJson(response);
+    }
+
     public async Task DeleteAsync(string path)
     {
         var response = await _http.DeleteAsync(path);
