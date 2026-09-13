@@ -17,7 +17,7 @@ public sealed class RestorePostgresCommand : AsyncCommand<RestorePostgresCommand
     {
         var client = settings.CreateClient();
         var result = await client.PostAsync($"postgres/{settings.PostgresId}/restore", new { timestamp = settings.Timestamp });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

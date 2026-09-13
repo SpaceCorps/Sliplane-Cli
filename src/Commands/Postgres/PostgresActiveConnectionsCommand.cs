@@ -9,7 +9,7 @@ public sealed class PostgresActiveConnectionsCommand : AsyncCommand<PostgresSett
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"postgres/{settings.PostgresId}/active-connections");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

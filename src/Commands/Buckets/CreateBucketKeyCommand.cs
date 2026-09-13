@@ -21,7 +21,7 @@ public sealed class CreateBucketKeyCommand : AsyncCommand<CreateBucketKeyCommand
     {
         var client = settings.CreateClient();
         var result = await client.PostAsync($"buckets/{settings.BucketId}/keys", new { name = settings.Name });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

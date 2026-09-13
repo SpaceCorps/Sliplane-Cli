@@ -78,10 +78,30 @@ public sealed class SliplaneClient
 
     private static async Task EnsureSuccess(HttpResponseMessage response)
     {
-        if (!response.IsSuccessStatusCode)
-        {
-            var body = await response.Content.ReadAsStringAsync();
-            throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {body}");
-        }
+        if (response.IsSuccessStatusCode) return;
+
+        var body = await response.Content.ReadAsStringAsync();
+        var hint = Hint(response.StatusCode, body);
+        throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {body}{hint}");
+    }
+
+    /// <summary>
+    /// Turns the API's terser refusals into something actionable. The status and
+    /// body are still shown verbatim; this only appends what to do about it.
+    /// </summary>
+    private static string Hint(System.Net.HttpStatusCode status, string body)
+    {
+        if (status == System.Net.HttpStatusCode.Conflict &&
+            body.Contains("deployment", StringComparison.OrdinalIgnoreCase))
+            return "\n\nA service cannot move between a registry image and a repository build. " +
+                   "Delete and recreate it with the deployment you want - volumes are " +
+                   "server-level resources and survive, so data on them is not lost.";
+
+        if (status == System.Net.HttpStatusCode.BadRequest &&
+            body.Contains("Deployment configuration is required", StringComparison.OrdinalIgnoreCase))
+            return "\n\nEvery update needs the deployment object. Pass --repo/--branch " +
+                   "(or --image) alongside whatever you are changing.";
+
+        return string.Empty;
     }
 }

@@ -21,7 +21,7 @@ public sealed class UpdateBucketCommand : AsyncCommand<UpdateBucketCommand.Setti
     {
         var client = settings.CreateClient();
         var result = await client.PatchAsync($"buckets/{settings.BucketId}", new { versioning = settings.Versioning });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

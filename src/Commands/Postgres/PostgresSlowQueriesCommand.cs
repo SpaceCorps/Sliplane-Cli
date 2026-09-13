@@ -9,7 +9,7 @@ public sealed class PostgresSlowQueriesCommand : AsyncCommand<PostgresSettings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"postgres/{settings.PostgresId}/slow-queries");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

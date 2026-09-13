@@ -21,7 +21,7 @@ public sealed class ListServiceEnvCommand : AsyncCommand<ListServiceEnvCommand.S
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}/env");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

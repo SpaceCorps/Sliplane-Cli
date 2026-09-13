@@ -35,7 +35,7 @@ public sealed class CreateBucketCommand : AsyncCommand<CreateBucketCommand.Setti
             versioning = settings.Versioning,
             objectLocking = settings.ObjectLocking
         });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

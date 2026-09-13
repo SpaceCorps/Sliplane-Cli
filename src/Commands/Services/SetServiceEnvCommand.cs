@@ -35,7 +35,7 @@ public sealed class SetServiceEnvCommand : AsyncCommand<SetServiceEnvCommand.Set
         var result = await client.PutAsync(
             $"projects/{settings.ProjectId}/services/{settings.ServiceId}/env/{Uri.EscapeDataString(settings.Key)}",
             new { value = settings.Value, secret = settings.Secret });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

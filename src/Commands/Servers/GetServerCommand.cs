@@ -17,7 +17,7 @@ public sealed class GetServerCommand : AsyncCommand<GetServerCommand.Settings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"servers/{settings.ServerId}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

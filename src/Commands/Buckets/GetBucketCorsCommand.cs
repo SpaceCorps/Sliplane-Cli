@@ -17,7 +17,7 @@ public sealed class GetBucketCorsCommand : AsyncCommand<GetBucketCorsCommand.Set
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"buckets/{settings.BucketId}/cors");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

@@ -9,7 +9,7 @@ public sealed class ListBucketsCommand : AsyncCommand<ApiSettings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync("buckets");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

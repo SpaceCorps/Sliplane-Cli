@@ -35,7 +35,7 @@ public sealed class CreateCredentialsCommand : AsyncCommand<CreateCredentialsCom
             username = settings.Username,
             token = settings.Token
         });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

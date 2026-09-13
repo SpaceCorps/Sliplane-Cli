@@ -17,7 +17,7 @@ public sealed class ListServerVolumesCommand : AsyncCommand<ListServerVolumesCom
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"servers/{settings.ServerId}/volumes");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

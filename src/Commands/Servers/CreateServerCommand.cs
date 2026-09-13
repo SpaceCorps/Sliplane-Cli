@@ -41,7 +41,7 @@ public sealed class CreateServerCommand : AsyncCommand<CreateServerCommand.Setti
         if (settings.DiskSizeGb.HasValue) body["diskSizeGb"] = settings.DiskSizeGb.Value;
         if (!string.IsNullOrEmpty(settings.BillingCycle)) body["billingCycle"] = settings.BillingCycle;
         var result = await client.PostAsync("servers", body);
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

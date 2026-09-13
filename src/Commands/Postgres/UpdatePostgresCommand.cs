@@ -42,7 +42,7 @@ public sealed class UpdatePostgresCommand : AsyncCommand<UpdatePostgresCommand.S
             body["ipAllowList"] = IpAllowList.Parse(settings.IpAllow);
 
         var result = await client.PatchAsync($"postgres/{settings.PostgresId}", body);
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

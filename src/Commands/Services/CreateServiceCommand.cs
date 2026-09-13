@@ -89,13 +89,13 @@ public sealed class CreateServiceCommand : AsyncCommand<CreateServiceCommand.Set
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings)
     {
         var client = settings.CreateClient();
-        var body = BuildBody(settings);
+        var body = await BuildBodyAsync(client, settings);
         var result = await client.PostAsync($"projects/{settings.ProjectId}/services", body);
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 
-    private static Dictionary<string, object> BuildBody(Settings s)
+    private static async Task<Dictionary<string, object>> BuildBodyAsync(SliplaneClient client, Settings s)
     {
         var body = new Dictionary<string, object>
         {
@@ -126,7 +126,7 @@ public sealed class CreateServiceCommand : AsyncCommand<CreateServiceCommand.Set
         if (!string.IsNullOrEmpty(s.Protocol)) network["protocol"] = s.Protocol;
         body["network"] = network;
 
-        if (!string.IsNullOrEmpty(s.Healthcheck)) body["healthcheck"] = s.Healthcheck;
+        if (!string.IsNullOrEmpty(s.Healthcheck)) body["healthcheck"] = PathArg.Check(s.Healthcheck, "--healthcheck");
         if (!string.IsNullOrEmpty(s.Cmd)) body["cmd"] = s.Cmd;
 
         var envVars = new List<Dictionary<string, object>>();
@@ -150,6 +150,31 @@ public sealed class CreateServiceCommand : AsyncCommand<CreateServiceCommand.Set
 
         if (s.Volumes is not null)
         {
+            // Sending a name creates a volume - every time, even when one of that
+            // name already exists. Two services asked for "app-data" end up on two
+            // different volumes with the same name, which is invisible until one of
+            // them is missing its data. So resolve the name to an existing id first
+            // and only fall back to creating when there genuinely is none.
+            Dictionary<string, string>? byName = null;
+            if (s.Volumes.Any(v => !v.Split(':', 2)[0].StartsWith("volume_")))
+            {
+                byName = new Dictionary<string, string>(StringComparer.Ordinal);
+                var existing = await client.GetAsync($"servers/{s.ServerId}/volumes");
+                if (existing.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var e in existing.RootElement.EnumerateArray())
+                    {
+                        if (e.TryGetProperty("name", out var n) && e.TryGetProperty("id", out var i))
+                        {
+                            var name = n.GetString();
+                            // First wins, so a re-run keeps using the same volume.
+                            if (name is not null && !byName.ContainsKey(name))
+                                byName[name] = i.GetString()!;
+                        }
+                    }
+                }
+            }
+
             var volumes = new List<Dictionary<string, object>>();
             foreach (var v in s.Volumes)
             {
@@ -157,6 +182,8 @@ public sealed class CreateServiceCommand : AsyncCommand<CreateServiceCommand.Set
                 var vol = new Dictionary<string, object> { ["mountPath"] = parts[1] };
                 if (parts[0].StartsWith("volume_"))
                     vol["id"] = parts[0];
+                else if (byName is not null && byName.TryGetValue(parts[0], out var id))
+                    vol["id"] = id;
                 else
                     vol["name"] = parts[0];
                 volumes.Add(vol);

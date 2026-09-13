@@ -21,7 +21,7 @@ public sealed class GetServiceCommand : AsyncCommand<GetServiceCommand.Settings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

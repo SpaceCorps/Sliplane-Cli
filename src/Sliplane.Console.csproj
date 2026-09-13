@@ -11,7 +11,7 @@
 
     <!-- NuGet package metadata -->
     <PackageId>Sliplane.Console</PackageId>
-    <Version>0.0.0-local</Version>
+    <Version>0.1.0</Version>
     <Authors>nielsbosma</Authors>
     <Description>CLI tool for the Sliplane API - manage servers, services, and projects</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

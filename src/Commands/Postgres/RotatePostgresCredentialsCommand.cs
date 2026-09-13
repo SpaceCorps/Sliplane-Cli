@@ -9,7 +9,7 @@ public sealed class RotatePostgresCredentialsCommand : AsyncCommand<PostgresSett
     {
         var client = settings.CreateClient();
         var result = await client.PostAsync($"postgres/{settings.PostgresId}/credentials/rotate");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

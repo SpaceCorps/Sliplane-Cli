@@ -9,7 +9,7 @@ public sealed class ListCredentialsCommand : AsyncCommand<ApiSettings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync("registry-credentials");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

@@ -9,7 +9,7 @@ public sealed class GetPostgresCommand : AsyncCommand<PostgresSettings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"postgres/{settings.PostgresId}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

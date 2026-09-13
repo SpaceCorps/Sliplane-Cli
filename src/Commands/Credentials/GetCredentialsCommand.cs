@@ -17,7 +17,7 @@ public sealed class GetCredentialsCommand : AsyncCommand<GetCredentialsCommand.S
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"registry-credentials/{settings.CredentialId}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

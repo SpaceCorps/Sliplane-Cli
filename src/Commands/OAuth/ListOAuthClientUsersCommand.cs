@@ -17,7 +17,7 @@ public sealed class ListOAuthClientUsersCommand : AsyncCommand<ListOAuthClientUs
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"oauth-clients/{settings.ClientId}/users");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

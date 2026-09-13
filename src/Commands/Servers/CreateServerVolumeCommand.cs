@@ -21,7 +21,7 @@ public sealed class CreateServerVolumeCommand : AsyncCommand<CreateServerVolumeC
     {
         var client = settings.CreateClient();
         var result = await client.PostAsync($"servers/{settings.ServerId}/volumes", new { name = settings.Name });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

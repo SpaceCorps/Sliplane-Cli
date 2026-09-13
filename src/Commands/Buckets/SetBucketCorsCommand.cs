@@ -42,7 +42,7 @@ public sealed class SetBucketCorsCommand : AsyncCommand<SetBucketCorsCommand.Set
     {
         var client = settings.CreateClient();
         var result = await client.PutAsync($"buckets/{settings.BucketId}/cors", BuildBody(settings));
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 

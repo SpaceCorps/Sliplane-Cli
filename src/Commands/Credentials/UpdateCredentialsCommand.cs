@@ -21,7 +21,7 @@ public sealed class UpdateCredentialsCommand : AsyncCommand<UpdateCredentialsCom
     {
         var client = settings.CreateClient();
         var result = await client.PatchAsync($"registry-credentials/{settings.CredentialId}", new { name = settings.Name });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

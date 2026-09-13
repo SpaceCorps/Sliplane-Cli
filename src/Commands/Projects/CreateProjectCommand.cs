@@ -17,7 +17,7 @@ public sealed class CreateProjectCommand : AsyncCommand<CreateProjectCommand.Set
     {
         var client = settings.CreateClient();
         var result = await client.PostAsync("projects", new { name = settings.Name });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

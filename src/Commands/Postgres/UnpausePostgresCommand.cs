@@ -9,7 +9,7 @@ public sealed class UnpausePostgresCommand : AsyncCommand<PostgresSettings>
     {
         var client = settings.CreateClient();
         var result = await client.PostAsync($"postgres/{settings.PostgresId}/unpause");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

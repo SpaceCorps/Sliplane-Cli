@@ -9,7 +9,7 @@ public sealed class ListPostgresCommand : AsyncCommand<ApiSettings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync("postgres");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

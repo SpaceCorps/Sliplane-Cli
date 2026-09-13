@@ -8,6 +8,39 @@ A command-line tool for the [Sliplane](https://sliplane.io) API. Manage your ser
 dotnet tool install -g Sliplane.Console
 ```
 
+## Output
+
+Commands print YAML by default. Pass `--json` for raw JSON, which is what you
+want when scripting:
+
+```bash
+sliplane services get --project-id p --service-id s --json | jq -r .status
+```
+
+## Notes on behaviour
+
+**`--env` replaces the whole environment.** It is not a merge - the API takes
+the array it is given. Passing two variables to a service that holds three
+deletes the third. The CLI refuses such an update and names what would be lost;
+pass `--replace-env` if removal is what you meant. To change one variable, use
+`services set-env`, which leaves the rest alone.
+
+**Secret values are write-only.** They read back as `''`, so they cannot be
+copied from one service to another, and a merge could not preserve them.
+
+**A service cannot move between a registry image and a repository build.** The
+API returns 409. Delete and recreate it instead - volumes are server-level
+resources and survive, so nothing on them is lost.
+
+**Volume names resolve to an existing volume.** `--volume my-data:/data` attaches
+the volume already called `my-data` rather than creating another one beside it.
+
+**Windows: run from PowerShell or cmd, not Git Bash.** Git Bash rewrites
+arguments that look like Unix paths before this program sees them, so
+`--healthcheck /` arrives as `C:/Program Files/Git/`. `MSYS_NO_PATHCONV=1` does
+not prevent it. The CLI detects the result and refuses rather than deploying a
+service whose healthchecks can never pass.
+
 ## Authentication
 
 Set your API key as an environment variable:

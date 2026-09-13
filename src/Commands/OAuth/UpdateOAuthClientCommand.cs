@@ -33,7 +33,7 @@ public sealed class UpdateOAuthClientCommand : AsyncCommand<UpdateOAuthClientCom
         if (settings.ImageUrl is not null) body["imageUrl"] = settings.ImageUrl;
         if (settings.RedirectUris is not null) body["redirectUris"] = settings.RedirectUris;
         var result = await client.PatchAsync($"oauth-clients/{settings.ClientId}", body);
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

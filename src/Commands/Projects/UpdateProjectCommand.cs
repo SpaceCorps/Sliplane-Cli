@@ -21,7 +21,7 @@ public sealed class UpdateProjectCommand : AsyncCommand<UpdateProjectCommand.Set
     {
         var client = settings.CreateClient();
         var result = await client.PatchAsync($"projects/{settings.ProjectId}", new { name = settings.Name });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

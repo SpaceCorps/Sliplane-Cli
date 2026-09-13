@@ -30,7 +30,7 @@ public sealed class PostgresLogsCommand : AsyncCommand<PostgresLogsCommand.Setti
         if (settings.Limit.HasValue) parts.Add($"limit={settings.Limit}");
         var query = parts.Count > 0 ? "?" + string.Join("&", parts) : "";
         var result = await client.GetAsync($"postgres/{settings.PostgresId}/logs{query}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

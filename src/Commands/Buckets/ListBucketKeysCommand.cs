@@ -17,7 +17,7 @@ public sealed class ListBucketKeysCommand : AsyncCommand<ListBucketKeysCommand.S
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"buckets/{settings.BucketId}/keys");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

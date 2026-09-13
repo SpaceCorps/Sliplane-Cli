@@ -17,7 +17,7 @@ public sealed class DeleteBucketCommand : AsyncCommand<DeleteBucketCommand.Setti
     {
         var client = settings.CreateClient();
         var result = await client.DeleteWithResponseAsync($"buckets/{settings.BucketId}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

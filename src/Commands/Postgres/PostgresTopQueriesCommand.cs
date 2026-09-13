@@ -9,7 +9,7 @@ public sealed class PostgresTopQueriesCommand : AsyncCommand<PostgresSettings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"postgres/{settings.PostgresId}/top-queries");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

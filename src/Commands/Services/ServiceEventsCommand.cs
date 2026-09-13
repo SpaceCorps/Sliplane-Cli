@@ -21,7 +21,7 @@ public sealed class ServiceEventsCommand : AsyncCommand<ServiceEventsCommand.Set
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}/events");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

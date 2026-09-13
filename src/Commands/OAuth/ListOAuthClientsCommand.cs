@@ -9,7 +9,7 @@ public sealed class ListOAuthClientsCommand : AsyncCommand<ApiSettings>
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync("oauth-clients");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

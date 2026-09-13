@@ -9,7 +9,7 @@ public sealed class PostgresRestoreWindowCommand : AsyncCommand<PostgresSettings
     {
         var client = settings.CreateClient();
         var result = await client.GetAsync($"postgres/{settings.PostgresId}/restore");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

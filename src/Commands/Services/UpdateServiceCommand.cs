@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.ComponentModel;
 using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
@@ -65,11 +66,15 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
         public string? Cmd { get; init; }
 
         [CommandOption("--env <KEY=VALUE>")]
-        [Description("Environment variable (repeatable, replaces all)")]
+        [Description("Environment variable (repeatable). REPLACES the whole environment - pass every variable, or use set-env for one")]
         public string[]? Env { get; init; }
 
+        [CommandOption("--replace-env")]
+        [Description("Allow --env/--secret-env to drop variables not listed. Without it, an update that would delete a variable is refused")]
+        public bool ReplaceEnv { get; init; }
+
         [CommandOption("--secret-env <KEY=VALUE>")]
-        [Description("Secret environment variable (repeatable)")]
+        [Description("Secret environment variable (repeatable). Shares one list with --env, so it replaces the whole environment too")]
         public string[]? SecretEnv { get; init; }
     }
 
@@ -78,7 +83,7 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
         var client = settings.CreateClient();
         var body = await BuildBodyAsync(client, settings);
         var result = await client.PatchAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}", body);
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 
@@ -87,11 +92,15 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
         var body = new Dictionary<string, object>();
 
         if (!string.IsNullOrEmpty(s.Name)) body["name"] = s.Name;
-        if (!string.IsNullOrEmpty(s.Healthcheck)) body["healthcheck"] = s.Healthcheck;
+        if (!string.IsNullOrEmpty(s.Healthcheck)) body["healthcheck"] = PathArg.Check(s.Healthcheck, "--healthcheck");
         if (!string.IsNullOrEmpty(s.Cmd)) body["cmd"] = s.Cmd;
 
         var deployment = new Dictionary<string, object>();
-        var needsDeploymentUrl = s.AutoDeploy.HasValue || s.DeployIncludePaths is not null || s.DeployIgnorePaths is not null;
+        // The API wants a deployment object on every PATCH, so any update has to
+        // carry the current one over - not just the deploy-related flags. Without
+        // this, `--healthcheck`, `--name` or `--cmd` on their own come back with
+        // "Deployment configuration is required".
+        var needsDeploymentUrl = true;
 
         if (!string.IsNullOrEmpty(s.Image))
         {
@@ -137,7 +146,38 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
                 envVars.Add(new Dictionary<string, object> { ["key"] = parts[0], ["value"] = parts.Length > 1 ? parts[1] : "", ["secret"] = true });
             }
         }
-        if (envVars.Count > 0) body["env"] = envVars;
+        if (envVars.Count > 0)
+        {
+            // The API replaces the whole env array rather than merging, so an
+            // update that lists two variables on a service holding three deletes
+            // the third - silently, and the service only fails later when it
+            // cannot find it. Merging here is not an option either: secrets read
+            // back masked, so carrying them over would write empty strings over
+            // real values.
+            //
+            // So refuse instead, and name what would be lost.
+            if (!s.ReplaceEnv)
+            {
+                var current = await client.GetAsync($"projects/{s.ProjectId}/services/{s.ServiceId}");
+                if (current.RootElement.TryGetProperty("env", out var existing) &&
+                    existing.ValueKind == JsonValueKind.Array)
+                {
+                    var supplied = envVars.Select(v => (string)v["key"]).ToHashSet(StringComparer.Ordinal);
+                    var dropped = existing.EnumerateArray()
+                        .Select(e => e.TryGetProperty("key", out var k) ? k.GetString() : null)
+                        .Where(k => k is not null && !supplied.Contains(k))
+                        .ToList();
+
+                    if (dropped.Count > 0)
+                        throw new InvalidOperationException(
+                            $"This would delete {dropped.Count} environment variable(s) not listed: {string.Join(", ", dropped)}. " +
+                            "--env replaces the whole environment. Change one variable with " +
+                            "`services set-env`, or pass --replace-env if deleting them is intended.");
+                }
+            }
+
+            body["env"] = envVars;
+        }
 
         return body;
     }

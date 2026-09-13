@@ -25,7 +25,9 @@ public sealed class DeployServiceCommand : AsyncCommand<DeployServiceCommand.Set
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings)
     {
         var client = settings.CreateClient();
-        object? body = !string.IsNullOrEmpty(settings.Tag) ? new { tag = settings.Tag } : null;
+        // An absent body means no Content-Type either, and the deploy endpoint
+        // rejects that with "Invalid request body". An empty object is accepted.
+        object body = !string.IsNullOrEmpty(settings.Tag) ? new { tag = settings.Tag } : new { };
         await client.PostAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}/deploy", body);
         AnsiConsole.MarkupLine("[green]Deployment request accepted.[/]");
         return 0;

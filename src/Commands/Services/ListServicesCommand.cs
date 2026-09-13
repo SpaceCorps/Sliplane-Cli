@@ -21,7 +21,7 @@ public sealed class ListServicesCommand : AsyncCommand<ListServicesCommand.Setti
         if (settings.ProjectId is not null)
         {
             var result = await client.GetAsync($"projects/{settings.ProjectId}/services");
-            YamlOutput.Write(result);
+            Output.Write(result);
             return 0;
         }
 
@@ -38,7 +38,7 @@ public sealed class ListServicesCommand : AsyncCommand<ListServicesCommand.Setti
             }
         }
 
-        YamlOutput.WriteObject(allServices);
+        Output.WriteObject(allServices);
         return 0;
     }
 

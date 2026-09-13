@@ -27,7 +27,7 @@ public sealed class AddDomainCommand : AsyncCommand<AddDomainCommand.Settings>
         var result = await client.PostAsync(
             $"projects/{settings.ProjectId}/services/{settings.ServiceId}/domains",
             new { domain = settings.Domain });
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

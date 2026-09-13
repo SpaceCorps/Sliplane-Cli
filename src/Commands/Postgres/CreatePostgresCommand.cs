@@ -69,7 +69,7 @@ public sealed class CreatePostgresCommand : AsyncCommand<CreatePostgresCommand.S
             body["ipAllowList"] = IpAllowList.Parse(settings.IpAllow);
 
         var result = await client.PostAsync("postgres", body);
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

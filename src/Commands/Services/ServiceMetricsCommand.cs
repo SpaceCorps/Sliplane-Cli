@@ -39,7 +39,7 @@ public sealed class ServiceMetricsCommand : AsyncCommand<ServiceMetricsCommand.S
         if (settings.To.HasValue) parts.Add($"to={settings.To}");
         var query = parts.Count > 0 ? "?" + string.Join("&", parts) : "";
         var result = await client.GetAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}/metrics{query}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 }

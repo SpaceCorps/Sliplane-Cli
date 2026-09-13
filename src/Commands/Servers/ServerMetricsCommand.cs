@@ -31,7 +31,7 @@ public sealed class ServerMetricsCommand : AsyncCommand<ServerMetricsCommand.Set
         var client = settings.CreateClient();
         var query = BuildQuery(settings);
         var result = await client.GetAsync($"servers/{settings.ServerId}/metrics{query}");
-        YamlOutput.Write(result);
+        Output.Write(result);
         return 0;
     }
 
