@@ -25,6 +25,12 @@ deletes the third. The CLI refuses such an update and names what would be lost;
 pass `--replace-env` if removal is what you meant. To change one variable, use
 `services set-env`, which leaves the rest alone.
 
+**`--branch`, `--dockerfile` and `--docker-context` work on their own.** They are
+applied to the service's current repository, so `services update --branch main`
+is enough. They are refused with `--image` or on a service that runs a registry
+image. After the update the CLI checks the service the API returns, and fails if
+a requested branch, Dockerfile or context did not take effect.
+
 **Secret values are write-only.** They read back as `''`, so they cannot be
 copied from one service to another, and a merge could not preserve them.
 

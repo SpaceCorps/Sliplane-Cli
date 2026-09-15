@@ -83,8 +83,29 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
         var client = settings.CreateClient();
         var body = await BuildBodyAsync(client, settings);
         var result = await client.PatchAsync($"projects/{settings.ProjectId}/services/{settings.ServiceId}", body);
+        EnsureDeploymentApplied(result, body);
         Output.Write(result);
         return 0;
+    }
+
+    /// <summary>
+    /// A 200 has come back before with the deployment unchanged, so compare what was
+    /// asked for with the service the API returns instead of trusting the status.
+    /// </summary>
+    private static void EnsureDeploymentApplied(JsonDocument result, Dictionary<string, object> body)
+    {
+        if (!body.TryGetValue("deployment", out var value) || value is not Dictionary<string, object> requested) return;
+        if (!result.RootElement.TryGetProperty("deployment", out var actual)) return;
+
+        foreach (var field in new[] { "branch", "dockerfilePath", "dockerContext" })
+        {
+            if (!requested.TryGetValue(field, out var wanted)) continue;
+            var got = actual.TryGetProperty(field, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            if (!string.Equals(got, (string)wanted, StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    $"Sliplane accepted the update but the service still has {field} '{got}' instead of '{wanted}'. " +
+                    "Check it with `services get`.");
+        }
     }
 
     private static async Task<Dictionary<string, object>> BuildBodyAsync(SliplaneClient client, Settings s)
@@ -100,27 +121,45 @@ public sealed class UpdateServiceCommand : AsyncCommand<UpdateServiceCommand.Set
         // carry the current one over - not just the deploy-related flags. Without
         // this, `--healthcheck`, `--name` or `--cmd` on their own come back with
         // "Deployment configuration is required".
-        var needsDeploymentUrl = true;
+        var buildFlags = !string.IsNullOrEmpty(s.Branch) ||
+                         !string.IsNullOrEmpty(s.DockerfilePath) ||
+                         !string.IsNullOrEmpty(s.DockerContext);
 
         if (!string.IsNullOrEmpty(s.Image))
         {
+            if (buildFlags)
+                throw new InvalidOperationException(
+                    "--branch, --dockerfile and --docker-context only apply to repository builds, not to --image.");
+
             deployment["url"] = s.Image;
             if (!string.IsNullOrEmpty(s.RegistryCredentialId))
                 deployment["registryAuthenticationId"] = s.RegistryCredentialId;
         }
-        else if (!string.IsNullOrEmpty(s.Repo))
+        else
         {
-            deployment["url"] = s.Repo;
+            if (!string.IsNullOrEmpty(s.Repo))
+            {
+                deployment["url"] = s.Repo;
+            }
+            else
+            {
+                // API requires url in deployment object; fetch current service to carry it over
+                var current = await client.GetAsync($"projects/{s.ProjectId}/services/{s.ServiceId}");
+                var dep = current.RootElement.GetProperty("deployment");
+                deployment["url"] = dep.GetProperty("url").GetString()!;
+
+                // These flags used to be sent only together with --repo. On their own they were
+                // dropped, and `services update --branch main` returned the unchanged service with exit 0.
+                var isRepositoryBuild = dep.TryGetProperty("branch", out var branch) && branch.ValueKind == JsonValueKind.String;
+                if (buildFlags && !isRepositoryBuild)
+                    throw new InvalidOperationException(
+                        "This service runs a registry image, so --branch, --dockerfile and --docker-context do not apply. " +
+                        "A service cannot move between an image and a repository build; delete and recreate it instead.");
+            }
+
             if (!string.IsNullOrEmpty(s.Branch)) deployment["branch"] = s.Branch;
             if (!string.IsNullOrEmpty(s.DockerfilePath)) deployment["dockerfilePath"] = s.DockerfilePath;
             if (!string.IsNullOrEmpty(s.DockerContext)) deployment["dockerContext"] = s.DockerContext;
-        }
-        else if (needsDeploymentUrl)
-        {
-            // API requires url in deployment object; fetch current service to carry it over
-            var current = await client.GetAsync($"projects/{s.ProjectId}/services/{s.ServiceId}");
-            var dep = current.RootElement.GetProperty("deployment");
-            deployment["url"] = dep.GetProperty("url").GetString()!;
         }
 
         if (s.AutoDeploy.HasValue) deployment["autoDeploy"] = s.AutoDeploy.Value;
