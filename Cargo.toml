@@ -1,0 +1,32 @@
+[package]
+name = "sliplane"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.89"
+description = "CLI for the Sliplane API - manage servers, services, Postgres, buckets and more"
+license = "MIT"
+repository = "https://github.com/rorychatt/Sliplane.Console"
+readme = "README.md"
+
+[[bin]]
+name = "sliplane"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }
+indexmap = { version = "2", features = ["serde"] }
+rpassword = "7.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_norway = "0.9"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

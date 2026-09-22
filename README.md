@@ -4,9 +4,19 @@ A command-line tool for the [Sliplane](https://sliplane.io) API. Manage your ser
 
 ## Installation
 
+A single static binary, written in Rust. It starts in a millisecond or two; the .NET tool it
+replaces took about 75 ms before it made its first request.
+
 ```bash
-dotnet tool install -g Sliplane.Console
+cargo install --git https://github.com/rorychatt/Sliplane.Console --locked
 ```
+
+Or download a prebuilt binary for macOS, Linux or Windows from the
+[releases page](https://github.com/rorychatt/Sliplane.Console/releases). Config and keystore
+entries are the same as the .NET version's, so accounts you added with it keep working.
+
+Checked against Sliplane API spec **0.5.0** (`https://ctrl.sliplane.io/spec.json`), which has
+65 endpoints. Every one of them has a command.
 
 ## Output
 
@@ -21,9 +31,16 @@ sliplane services get --project-id p --service-id s --json | jq -r .status
 
 **`--env` replaces the whole environment.** It is not a merge - the API takes
 the array it is given. Passing two variables to a service that holds three
-deletes the third. The CLI refuses such an update and names what would be lost;
-pass `--replace-env` if removal is what you meant. To change one variable, use
-`services set-env`, which leaves the rest alone.
+deletes the third. The CLI refuses such an update and names what would be lost.
+Pass `--merge-env` to keep the variables you did not list, or `--replace-env` if
+removal is what you meant. To change one variable, use `services set-env`, which
+leaves the rest alone.
+
+**`services update` carries the current deployment over.** The API takes a whole
+deployment object, and the spec gives its fields defaults (`branch: main`,
+`dockerfilePath: Dockerfile`). So `services update --healthcheck /health` resends
+the current branch, Dockerfile, context, path filters and registry credentials
+rather than risk them resetting.
 
 **`--branch`, `--dockerfile` and `--docker-context` work on their own.** They are
 applied to the service's current repository, so `services update --branch main`
@@ -32,11 +49,18 @@ image. After the update the CLI checks the service the API returns, and fails if
 a requested branch, Dockerfile or context did not take effect.
 
 **Secret values are write-only.** They read back as `''`, so they cannot be
-copied from one service to another, and a merge could not preserve them.
+copied from one service to another. A secret sent back with an empty value keeps
+its stored value, which is how `--merge-env` preserves secrets it cannot read.
+
+**Actions that return no body print a status.** `delete`, `pause`, `deploy` and
+the rest print a small `status:` object, so stdout stays parseable with `--json`.
 
 **A service cannot move between a registry image and a repository build.** The
 API returns 409. Delete and recreate it instead - volumes are server-level
 resources and survive, so nothing on them is lost.
+
+**Network settings and volumes are fixed at creation.** `--public`, `--protocol`
+and `--volume` exist only on `services create`, and `--protocol` needs `--public`.
 
 **Volume names resolve to an existing volume.** `--volume my-data:/data` attaches
 the volume already called `my-data` rather than creating another one beside it.
@@ -60,7 +84,8 @@ sliplane accounts add side-project        # prompts for the key, without echo
 `add` calls `me` with the key before storing it, so a bad key fails here rather than on some
 later command. The key itself goes into the OS keystore - DPAPI on Windows, Keychain on macOS,
 libsecret on Linux - and only the name, organization and a label are written to `config.yaml`.
-For legacy tokens that need `X-Organization-ID`, pass `--org-id`.
+Current keys embed their organization (`api_rw_org_...`). `--org-id` exists only for legacy
+tokens that still need `X-Organization-ID`.
 
 Then name the account on every command:
 
@@ -83,6 +108,7 @@ sliplane accounts remove work       # deletes the local key; does not revoke it 
 | `SLIPLANE_CONFIG_DIR` | Overrides where `config.yaml` and the secret store live |
 | `SLIPLANE_SECRET_STORE` | Forces a backend: `dpapi`, `keychain`, `libsecret`, `plaintext` |
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE=1` | Permits a 0600 file where no OS keystore exists |
+| `SLIPLANE_API_URL` | Overrides the API base URL (for tests against a mock; never selects a key) |
 
 ## Driving this from an agent
 
@@ -120,7 +146,7 @@ Every command below takes `--account <name>` (short `-a`), except `accounts *` a
 | `projects list` | List all projects |
 | `projects create` | Create a new project |
 | `projects update` | Update a project name |
-| `projects delete` | Delete a project |
+| `projects delete` | Delete a project (must have no services) |
 | **Servers** | |
 | `servers list` | List all servers |
 | `servers get` | Get server details |
@@ -134,13 +160,13 @@ Every command below takes `--account <name>` (short `-a`), except `accounts *` a
 | **Services** | |
 | `services list` | List services in a project |
 | `services get` | Get service details |
-| `services create` | Create a new service |
-| `services update` | Update a service |
+| `services create` | Create a new service (`--image` or `--repo` required) |
+| `services update` | Update a service (`--merge-env` / `--replace-env` for env changes) |
 | `services delete` | Delete a service |
 | `services pause` | Pause a service |
 | `services unpause` | Unpause a service |
 | `services deploy` | Trigger a deployment |
-| `services logs` | Get service logs |
+| `services logs` | Get service logs (500 lines per call; page back with `--to`) |
 | `services metrics` | Get service metrics |
 | `services events` | Get service events |
 | `services list-env` | List environment variables |
@@ -202,6 +228,9 @@ sliplane projects list -a work
 
 # Create a server
 sliplane servers create --name my-server --instance-type base --location ger -a work
+
+# Add one variable to a service, keeping the rest (secrets included)
+sliplane services update --project-id project_abc --service-id service_abc --env LOG_LEVEL=debug --merge-env -a work
 
 # Deploy a service
 sliplane services deploy --project-id project_abc --service-id service_abc -a work
