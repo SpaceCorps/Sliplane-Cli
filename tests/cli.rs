@@ -361,7 +361,7 @@ fn update_fails_when_a_branch_does_not_take() {
     let env = Env::new(&mock).with_account();
     let (code, _, err) =
         env.json(&["services", "update", "--project-id", "p1", "--service-id", "s1", "--branch", "main", "-a", "work"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 6);
     assert!(err["error"].as_str().unwrap().contains("branch 'develop' instead of 'main'"), "{err}");
     assert_eq!(mock.last("PATCH").body.unwrap()["deployment"]["branch"], "main");
 }

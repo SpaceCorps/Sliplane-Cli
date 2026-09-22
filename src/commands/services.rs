@@ -476,7 +476,8 @@ fn ensure_applied(result: &Value, d: &Deploy) -> Result<()> {
         let Some(wanted) = wanted else { continue };
         let got = actual.get(field).and_then(Value::as_str);
         if got != Some(wanted) {
-            return Err(Error::other(format!(
+            // invalid_input, as in the .NET version: exit codes are a contract with callers.
+            return Err(Error::invalid(format!(
                 "Sliplane accepted the update but the service still has {field} '{}' instead of '{wanted}'.",
                 got.unwrap_or("")
             ))
