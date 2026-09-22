@@ -80,9 +80,36 @@ public sealed class SliplaneClient
     {
         if (response.IsSuccessStatusCode) return;
 
-        var body = await response.Content.ReadAsStringAsync();
-        var hint = Hint(response.StatusCode, body);
-        throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {body}{hint}");
+        var status = (int)response.StatusCode;
+        var body = (await response.Content.ReadAsStringAsync()).Trim();
+        var detail = $"HTTP {status}" + (body.Length == 0 ? "" : ": " + body) + Hint(response.StatusCode, body);
+
+        throw response.StatusCode switch
+        {
+            System.Net.HttpStatusCode.Unauthorized => SliplaneException.Auth(
+                "The API key was rejected.", detail,
+                "Replace it: sliplane accounts add <name> --api-key <key> --force"),
+
+            System.Net.HttpStatusCode.Forbidden => SliplaneException.Auth(
+                "The API key is not allowed to do that.", detail,
+                "A legacy token also needs an organization: sliplane accounts add <name> --api-key <key> --org-id <id>"),
+
+            System.Net.HttpStatusCode.NotFound => SliplaneException.NotFound(
+                "The resource does not exist.", detail),
+
+            System.Net.HttpStatusCode.TooManyRequests => new SliplaneException(
+                ErrorCode.RateLimited, "Rate limited by the Sliplane API.", detail,
+                "Back off before retrying."),
+
+            System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.UnprocessableEntity =>
+                new SliplaneException(ErrorCode.InvalidInput, "The API refused the request.", detail),
+
+            _ when status >= 500 => new SliplaneException(
+                ErrorCode.Network, "The Sliplane API returned a server error.", detail,
+                "Retry; if it persists the platform is having trouble."),
+
+            _ => new SliplaneException(ErrorCode.Error, "The request failed.", detail)
+        };
     }
 
     /// <summary>

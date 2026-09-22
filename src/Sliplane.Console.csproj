@@ -11,7 +11,7 @@
 
     <!-- NuGet package metadata -->
     <PackageId>Sliplane.Console</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>nielsbosma</Authors>
     <Description>CLI tool for the Sliplane API - manage servers, services, and projects</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -26,5 +26,6 @@
   <ItemGroup>
     <PackageReference Include="Spectre.Console.Cli" Version="0.49.1" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
   </ItemGroup>
 </Project>

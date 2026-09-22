@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace Sliplane.Console.Infrastructure;
@@ -13,7 +14,10 @@ public static class Output
 {
     public static bool UseJson { get; set; }
 
-    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+    // The relaxed encoder keeps quotes, angle brackets and non-ASCII readable; this output goes
+    // to a terminal or jq, never into HTML.
+    public static readonly JsonSerializerOptions Indented =
+        new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     public static void Write(JsonDocument doc)
     {

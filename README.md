@@ -47,21 +47,54 @@ arguments that look like Unix paths before this program sees them, so
 not prevent it. The CLI detects the result and refuses rather than deploying a
 service whose healthchecks can never pass.
 
-## Authentication
+## Accounts
 
-Set your API key as an environment variable:
-
-```bash
-export SLIPLANE_API_KEY=your-api-key
-```
-
-Or pass it directly:
+One machine usually holds keys for more than one Sliplane account, so keys are configured by
+name and the name is required on every command. Add an account once:
 
 ```bash
-sliplane me --api-key your-api-key
+sliplane accounts add work --api-key sl_your_api_key
+sliplane accounts add side-project        # prompts for the key, without echo
 ```
 
-For legacy tokens, you can also provide an organization ID via `--org-id` or `SLIPLANE_ORG_ID`.
+`add` calls `me` with the key before storing it, so a bad key fails here rather than on some
+later command. The key itself goes into the OS keystore - DPAPI on Windows, Keychain on macOS,
+libsecret on Linux - and only the name, organization and a label are written to `config.yaml`.
+For legacy tokens that need `X-Organization-ID`, pass `--org-id`.
+
+Then name the account on every command:
+
+```bash
+sliplane projects list --account work
+sliplane services deploy --project-id p --service-id s -a work
+```
+
+There is no default account and no `SLIPLANE_API_KEY`: with keys for several accounts on one
+machine, a default is how a deploy ends up in the wrong one.
+
+```bash
+sliplane accounts list [--check]    # --check calls the API once per account
+sliplane accounts test work         # what this key is, and whether it still works
+sliplane accounts remove work       # deletes the local key; does not revoke it at Sliplane
+```
+
+| Variable | Effect |
+| --- | --- |
+| `SLIPLANE_CONFIG_DIR` | Overrides where `config.yaml` and the secret store live |
+| `SLIPLANE_SECRET_STORE` | Forces a backend: `dpapi`, `keychain`, `libsecret`, `plaintext` |
+| `SLIPLANE_ALLOW_PLAINTEXT_STORE=1` | Permits a 0600 file where no OS keystore exists |
+
+## Driving this from an agent
+
+```bash
+sliplane agent-readme           # the operating manual, as markdown
+sliplane agent-readme --json    # the same rules and exit codes as data
+```
+
+Errors print a YAML (or JSON) envelope on stderr with a stable `code`, and the exit status
+matches it: `1` error, `2` network, `3` auth_required, `4` not_found, `5` rate_limited,
+`6` invalid_input, `7` no_account. An envelope carries `remediation` when a specific command
+fixes the problem.
 
 ## Usage
 
@@ -71,9 +104,18 @@ sliplane <command> [options]
 
 ### Commands
 
+Every command below takes `--account <name>` (short `-a`), except `accounts *` and
+`agent-readme`.
+
 | Command | Description |
 |---------|-------------|
 | `me` | Get current identity and token context |
+| `agent-readme` | Print the operating manual for an LLM agent |
+| **Accounts** | |
+| `accounts add` | Add an account and store its API key in the OS keystore |
+| `accounts list` | List configured accounts |
+| `accounts test` | Check that an account's stored key still works |
+| `accounts remove` | Remove an account and delete its stored key |
 | **Projects** | |
 | `projects list` | List all projects |
 | `projects create` | Create a new project |
@@ -149,37 +191,36 @@ sliplane <command> [options]
 ### Examples
 
 ```bash
+# Configure an account once
+sliplane accounts add work --api-key sl_your_api_key
+
 # Check your identity
-sliplane me
+sliplane me -a work
 
 # List all projects
-sliplane projects list
+sliplane projects list -a work
 
 # Create a server
-sliplane servers create --name my-server --plan starter --region eu
+sliplane servers create --name my-server --instance-type base --location ger -a work
 
 # Deploy a service
-sliplane services deploy --service-id abc123
+sliplane services deploy --project-id project_abc --service-id service_abc -a work
 
 # View service logs
-sliplane services logs --service-id abc123
+sliplane services logs --project-id project_abc --service-id service_abc -a work
 
 # Create a Postgres database
-sliplane postgres create --name my-db --instance-type base --region ger
+sliplane postgres create --name my-db --instance-type base --region ger -a work
 
 # Restrict a database to a single network
-sliplane postgres update --postgres-id pg_abc123 --ip-allow 203.0.113.0/24=office
+sliplane postgres update --postgres-id pg_abc123 --ip-allow 203.0.113.0/24=office -a work
 
 # Create a bucket and an access key for it
-sliplane buckets create --name my-app-uploads --region ger
-sliplane buckets create-key --bucket-id sb_abc123 --name "Production uploads"
+sliplane buckets create --name my-app-uploads --region ger -a work
+sliplane buckets create-key --bucket-id sb_abc123 --name "Production uploads" -a work
 ```
 
 > The PostgreSQL major version on `postgres create` is `--pg-version`; `--version` is reserved by the CLI itself.
-
-## Output
-
-All commands output YAML for easy reading and scripting.
 
 ## License
 

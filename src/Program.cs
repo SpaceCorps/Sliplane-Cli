@@ -1,4 +1,5 @@
 using Sliplane.Console.Commands;
+using Sliplane.Console.Commands.Accounts;
 using Sliplane.Console.Commands.Buckets;
 using Sliplane.Console.Commands.Credentials;
 using Sliplane.Console.Commands.OAuth;
@@ -6,14 +7,37 @@ using Sliplane.Console.Commands.Postgres;
 using Sliplane.Console.Commands.Projects;
 using Sliplane.Console.Commands.Servers;
 using Sliplane.Console.Commands.Services;
+using Sliplane.Console.Infrastructure;
 using Spectre.Console.Cli;
+
+// The error envelope is rendered before any command has run, so the format has to be known
+// before Spectre parses anything. Commands overwrite this with the same value.
+Output.UseJson = args.Contains("--json");
 
 var app = new CommandApp();
 
 app.Configure(config =>
 {
+    config.SetExceptionHandler((ex, _) => ErrorOutput.Write(ex));
+
     config.AddCommand<MeCommand>("me")
         .WithDescription("Get current identity and token context");
+
+    config.AddCommand<AgentReadmeCommand>("agent-readme")
+        .WithDescription("Print the operating manual for an LLM agent driving this CLI");
+
+    config.AddBranch("accounts", accounts =>
+    {
+        accounts.SetDescription("Manage Sliplane accounts and their API keys");
+        accounts.AddCommand<AddAccountCommand>("add")
+            .WithDescription("Add an account and store its API key in the OS keystore");
+        accounts.AddCommand<ListAccountsCommand>("list")
+            .WithDescription("List configured accounts");
+        accounts.AddCommand<TestAccountCommand>("test")
+            .WithDescription("Check that an account's stored key still works");
+        accounts.AddCommand<RemoveAccountCommand>("remove")
+            .WithDescription("Remove an account and delete its stored key");
+    });
 
     config.AddBranch("projects", projects =>
     {

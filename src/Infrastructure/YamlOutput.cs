@@ -18,8 +18,10 @@ public static class YamlOutput
 
     public static void WriteObject(object obj)
     {
-        System.Console.WriteLine(Serializer.Serialize(obj).TrimEnd());
+        System.Console.WriteLine(Serialize(obj));
     }
+
+    public static string Serialize(object obj) => Serializer.Serialize(obj).TrimEnd();
 
     private static object? JsonToObject(JsonElement element) => element.ValueKind switch
     {

@@ -1,31 +1,40 @@
 using System.ComponentModel;
+using Sliplane.Console.Auth;
 using Spectre.Console.Cli;
 
 namespace Sliplane.Console.Infrastructure;
 
-public class ApiSettings : CommandSettings
+/// <summary>Settings for every command, including the ones that never call the API.</summary>
+public class LocalSettings : CommandSettings
 {
-    [CommandOption("--api-key <KEY>")]
-    [Description("Sliplane API key (or set SLIPLANE_API_KEY env var)")]
-    public string? ApiKey { get; init; }
-
-    [CommandOption("--org-id <ORG_ID>")]
-    [Description("Organization ID for legacy tokens (or set SLIPLANE_ORG_ID env var)")]
-    public string? OrgId { get; init; }
-
     [CommandOption("--json")]
     [Description("Print raw JSON instead of YAML, for scripting")]
     public bool Json { get; init; }
 
+    /// <summary>
+    /// Commands render through <see cref="Output"/> without knowing their settings, so the
+    /// choice is recorded once, here, before anything is written.
+    /// </summary>
+    public void ApplyOutputMode() => Output.UseJson = Json;
+}
+
+/// <summary>Settings for a command that talks to the Sliplane API as one configured account.</summary>
+public class ApiSettings : LocalSettings
+{
+    /// <summary>
+    /// Required, but not declared <c>required</c> - a missing value is resolved by
+    /// <see cref="AccountResolver"/> so the failure carries the list of configured accounts
+    /// instead of Spectre's bare parse error.
+    /// </summary>
+    [CommandOption("-a|--account <ACCOUNT>")]
+    [Description("Account to run against (required; see 'sliplane accounts list')")]
+    public string? Account { get; init; }
+
     public SliplaneClient CreateClient()
     {
-        // Commands render through Output.Write without knowing their settings,
-        // so the choice is recorded here, once, as the client is built.
-        Output.UseJson = Json;
+        ApplyOutputMode();
 
-        var key = ApiKey ?? Environment.GetEnvironmentVariable("SLIPLANE_API_KEY")
-            ?? throw new InvalidOperationException("API key required. Use --api-key or set SLIPLANE_API_KEY.");
-        var org = OrgId ?? Environment.GetEnvironmentVariable("SLIPLANE_ORG_ID");
-        return new SliplaneClient(key, org);
+        var account = AccountResolver.Resolve(Account);
+        return new SliplaneClient(account.ApiKey, account.OrgId);
     }
 }
