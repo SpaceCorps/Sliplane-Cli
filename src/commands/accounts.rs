@@ -16,7 +16,11 @@ use crate::secrets::{self, Store};
 
 pub fn run(c: Accounts) -> Result<()> {
     match c {
-        Accounts::Add { name, api_key, org_id, force, no_verify } => add(name, api_key, org_id, force, no_verify),
+        Accounts::Add { name, api_key, api_key_stdin, org_id, force, no_verify } => {
+            // Keeps the key out of argv, shell history and anything that echoes the command.
+            let api_key = if api_key_stdin { Some(read_stdin_key()?) } else { api_key };
+            add(name, api_key, org_id, force, no_verify)
+        }
         Accounts::List { check } => list(check),
         Accounts::Test { name } => test(&name),
         Accounts::Remove { name, yes } => remove(&name, yes),
@@ -89,11 +93,21 @@ fn add(name: String, api_key: Option<String>, org_id: Option<String>, force: boo
     })
 }
 
+fn read_stdin_key() -> Result<String> {
+    let mut key = String::new();
+    std::io::stdin().lock().read_line(&mut key).map_err(|e| Error::invalid(format!("Could not read stdin: {e}")))?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err(Error::invalid("--api-key-stdin was given but stdin was empty."));
+    }
+    Ok(key)
+}
+
 /// Prompts on the terminal, never stdout, so stdout stays a clean payload.
 fn prompt_key(name: &str) -> Result<String> {
     if !std::io::stdin().is_terminal() {
         return Err(Error::invalid("No API key given and no terminal to prompt on.")
-            .fix(format!("sliplane accounts add {name} --api-key <key>")));
+            .fix(format!("pbpaste | sliplane accounts add {name} --api-key-stdin")));
     }
     loop {
         let key = rpassword::prompt_password(format!("API key for {name}: "))

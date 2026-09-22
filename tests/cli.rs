@@ -202,6 +202,27 @@ fn accounts_lifecycle() {
 }
 
 #[test]
+fn api_key_from_stdin() {
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sliplane"))
+        .args(["accounts", "add", "piped", "--api-key-stdin", "--json"])
+        .env("SLIPLANE_CONFIG_DIR", &env.dir)
+        .env("SLIPLANE_SECRET_STORE", "plaintext")
+        .env("SLIPLANE_API_URL", &env.api)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"sl_piped\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let auth = mock.last("GET").headers.into_iter().find(|(k, _)| k == "authorization").unwrap().1;
+    assert_eq!(auth, "Bearer sl_piped");
+}
+
+#[test]
 fn config_is_readable_yaml_without_secrets() {
     let mock = Mock::start(vec![me()]);
     let env = Env::new(&mock).with_account();

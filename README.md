@@ -79,6 +79,7 @@ name and the name is required on every command. Add an account once:
 ```bash
 sliplane accounts add work --api-key sl_your_api_key
 sliplane accounts add side-project        # prompts for the key, without echo
+pbpaste | sliplane accounts add ci --api-key-stdin   # no terminal: read the key from stdin
 ```
 
 `add` calls `me` with the key before storing it, so a bad key fails here rather than on some

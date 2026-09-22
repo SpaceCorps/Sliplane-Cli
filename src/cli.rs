@@ -76,8 +76,11 @@ pub enum Accounts {
         /// Short name for this account, used as --account elsewhere
         name: String,
         /// Sliplane API key (prompted for, without echo, if omitted)
-        #[arg(long, value_name = "KEY")]
+        #[arg(long, value_name = "KEY", conflicts_with = "api_key_stdin")]
         api_key: Option<String>,
+        /// Read the API key from stdin, e.g. `pbpaste | sliplane accounts add work --api-key-stdin`
+        #[arg(long)]
+        api_key_stdin: bool,
         /// Organization ID sent as X-Organization-ID. Legacy only - current keys embed the organization
         #[arg(long, value_name = "ORG_ID")]
         org_id: Option<String>,
