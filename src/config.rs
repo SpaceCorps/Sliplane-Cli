@@ -57,23 +57,23 @@ pub fn config_dir() -> PathBuf {
     }
 
     #[cfg(windows)]
-    {
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default();
-        return appdata.join("sliplane-cli");
-    }
+    let dir = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default().join("sliplane-cli");
 
     #[cfg(not(windows))]
-    {
+    let dir = {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         if cfg!(target_os = "macos") {
-            return home.join("Library").join("Application Support").join("sliplane-cli");
+            home.join("Library").join("Application Support").join("sliplane-cli")
+        } else {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".config"))
+                .join("sliplane-cli")
         }
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".config"));
-        base.join("sliplane-cli")
-    }
+    };
+
+    dir
 }
 
 pub fn config_path() -> PathBuf {
