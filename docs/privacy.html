@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy · Sliplane CLI</title>
+  <meta name="description" content="Privacy policy for Sliplane CLI: Zero telemetry, local keystore credential storage, and developer data ownership principles.">
+  <link rel="canonical" href="https://spacecorps.github.io/Sliplane-Cli/privacy.html">
+  <meta property="og:title" content="Privacy Policy · Sliplane CLI">
+  <meta property="og:description" content="Privacy policy for Sliplane CLI: Zero telemetry, local keystore credential storage, and developer data ownership principles.">
+  <meta property="og:url" content="https://spacecorps.github.io/Sliplane-Cli/privacy.html">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://spacecorps.github.io/Sliplane-Cli/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="is-agentic-site-type" content="content">
+  <style>
+    body { background: #090d16; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.7; padding: 40px 20px; }
+    .content-box { max-width: 800px; margin: 0 auto; background: rgba(22, 27, 46, 0.7); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 40px; }
+    h1 { font-size: 2.2rem; margin-bottom: 20px; color: #fff; }
+    h2 { font-size: 1.4rem; margin-top: 30px; margin-bottom: 12px; color: #38bdf8; }
+    p { margin-bottom: 16px; color: #94a3b8; }
+    a { color: #38bdf8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .back { display: inline-block; margin-bottom: 24px; color: #6366f1; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="content-box">
+    <a href="./" class="back">&larr; Back to Sliplane CLI</a>
+    <h1>Privacy Policy & Data Security</h1>
+    
+    <p>Last updated: September 23, 2026. This Privacy Policy details the data handling, storage practices, and network communications of the Sliplane CLI executable and documentation website.</p>
+
+    <h2>1. Zero Telemetry & Local Execution</h2>
+    <p>The Sliplane CLI binary contains zero tracking code, zero analytics SDKs, and zero telemetry beacons. We believe that developer terminal workflows must remain completely private. The application does not collect usage metrics, IP addresses, execution timestamps, or error reports back to any SpaceCorps server. The only network requests made by the tool are outbound HTTPS requests made directly to the official Sliplane API endpoint (<code>https://ctrl.sliplane.io/v0/</code>) to fulfill user-initiated operations.</p>
+
+    <h2>2. Cryptographic Credential Protection</h2>
+    <p>Authentication tokens and API keys are sensitive secrets. Sliplane CLI strictly refuses to save secret tokens in plain-text configuration files by default. Instead, API keys are delegated directly to the secure credential store provided by the host operating system: macOS Keychain Services via the native security subsystem, Windows Data Protection API (DPAPI) encrypted under user-specific credentials, or the freedesktop.org Secret Service daemon via libsecret on Linux.</p>
+
+    <h2>3. Local Configuration Metadata</h2>
+    <p>Non-sensitive configuration metadata—specifically account alias names, identity labels (such as your account email), and organization identifiers returned by the API—is stored locally in an owner-restricted YAML file (chmod 0600 on POSIX platforms) located within your standard system configuration directory (<code>~/Library/Application Support/sliplane-cli</code> on macOS, <code>~/.config/sliplane-cli</code> on Linux, or <code>%APPDATA%\sliplane-cli</code> on Windows). This file can be inspected, backed up, or deleted at any time.</p>
+
+    <h2>4. Website Privacy</h2>
+    <p>This documentation website is hosted as a static site on GitHub Pages. It contains no tracking scripts, no third-party cookies, and no personal data collection mechanisms. Standard web server access logs are handled directly by GitHub in accordance with GitHub's standard Privacy Statement.</p>
+  </div>
+</body>
+</html>

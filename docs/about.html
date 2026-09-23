@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>About · Sliplane CLI</title>
+  <meta name="description" content="About Sliplane CLI: An open source native Rust command-line tool and agent interface for the Sliplane cloud hosting platform.">
+  <link rel="canonical" href="https://spacecorps.github.io/Sliplane-Cli/about.html">
+  <meta property="og:title" content="About · Sliplane CLI">
+  <meta property="og:description" content="About Sliplane CLI: An open source native Rust command-line tool and agent interface for the Sliplane cloud hosting platform.">
+  <meta property="og:url" content="https://spacecorps.github.io/Sliplane-Cli/about.html">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://spacecorps.github.io/Sliplane-Cli/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="is-agentic-site-type" content="content">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body { background: #090d16; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.7; padding: 40px 20px; }
+    .content-box { max-width: 800px; margin: 0 auto; background: rgba(22, 27, 46, 0.7); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 40px; }
+    h1 { font-size: 2.2rem; margin-bottom: 20px; color: #fff; }
+    h2 { font-size: 1.4rem; margin-top: 30px; margin-bottom: 12px; color: #38bdf8; }
+    p { margin-bottom: 16px; color: #94a3b8; }
+    a { color: #38bdf8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .back { display: inline-block; margin-bottom: 24px; color: #6366f1; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="content-box">
+    <a href="./" class="back">&larr; Back to Sliplane CLI</a>
+    <h1>About Sliplane CLI</h1>
+    
+    <p>Sliplane CLI is a high-performance, open-source command-line tool and programmatic automation interface designed specifically for the Sliplane cloud infrastructure platform. Maintained under the SpaceCorps open-source engineering collective, the project originated to provide developers and autonomous AI agents with a single, standalone binary capable of operating seamlessly across macOS, Linux, and Windows without runtime dependencies or heavy interpreter overhead.</p>
+
+    <h2>Project Mission & Origins</h2>
+    <p>Modern cloud development demands rapid feedback loops and secure automation. The original prototype CLI was implemented as a .NET global tool by Niels Bosma. While functional, modern deployment pipelines and autonomous coding assistants benefit immensely from static binaries that start in 1 to 3 milliseconds rather than incurring the multi-millisecond startup latencies of managed runtimes. In 2026, the CLI was completely re-architected in Rust to achieve native speed, predictable memory usage, and zero runtime dependencies.</p>
+
+    <h2>Architectural Principles</h2>
+    <p>Sliplane CLI is built around three uncompromising tenets: safety, determinism, and speed. Unlike conventional tools that quietly store plain-text secrets in home directories, Sliplane CLI integrates natively with host operating system credential vaults—such as macOS Keychain, Windows DPAPI, and the Linux Secret Service daemon. Furthermore, to prevent catastrophic accidental actions in multi-tenant or multi-account configurations, mutating API commands strictly enforce account scoping, ensuring that autonomous agents and scripts always operate on the intended environment.</p>
+
+    <h2>Specification & Compatibility</h2>
+    <p>Every command and flag in the CLI is grounded directly in the official Sliplane OpenAPI specification (v0, API version 0.5.0), ensuring 100% parity across all 65 public endpoints. This includes end-to-end support for virtual servers, application services, managed PostgreSQL databases, S3-compatible object storage, registry credentials, and OAuth clients.</p>
+  </div>
+</body>
+</html>

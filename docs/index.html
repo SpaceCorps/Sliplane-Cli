@@ -4,8 +4,86 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sliplane CLI | Fast Native CLI for Sliplane in Rust</title>
-  <meta name="description" content="A blazing fast native command-line tool for the Sliplane API, written in Rust. Manage servers, services, managed Postgres, S3 buckets, and more from your terminal.">
+  <meta name="description" content="A blazing fast native command-line tool and agent interface for the Sliplane cloud API, written in Rust. Manage servers, services, Postgres, S3 buckets, and deployments from your terminal.">
+  <link rel="canonical" href="https://spacecorps.github.io/Sliplane-Cli/">
+  <meta name="is-agentic-site-type" content="content">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+  <meta name="keywords" content="Sliplane, CLI, Rust, cloud hosting, Docker deployments, Postgres, S3 buckets, AI agents, DevOps">
+  <meta name="author" content="SpaceCorps">
+  
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://spacecorps.github.io/Sliplane-Cli/">
+  <meta property="og:title" content="Sliplane CLI | Fast Native CLI for Sliplane in Rust">
+  <meta property="og:description" content="A blazing fast native command-line tool and agent interface for the Sliplane API (65 endpoints), written in Rust.">
+  <meta property="og:image" content="https://spacecorps.github.io/Sliplane-Cli/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Sliplane CLI — Native Rust Command Line Tool">
+  <meta property="og:site_name" content="Sliplane CLI">
+  <meta property="og:locale" content="en_US">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://spacecorps.github.io/Sliplane-Cli/">
+  <meta name="twitter:title" content="Sliplane CLI | Fast Native CLI for Sliplane in Rust">
+  <meta name="twitter:description" content="A blazing fast native command-line tool and agent interface for the Sliplane API (65 endpoints), written in Rust.">
+  <meta name="twitter:image" content="https://spacecorps.github.io/Sliplane-Cli/og-image.png">
+
+  <!-- AI Agents & Discovery -->
+  <link rel="alternate" type="text/markdown" href="https://spacecorps.github.io/Sliplane-Cli/llms.txt" title="LLMs.txt">
+  <link rel="sitemap" type="application/xml" href="https://spacecorps.github.io/Sliplane-Cli/sitemap.xml" title="Sitemap">
+
+  <!-- Favicon -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
+
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "name": "Sliplane CLI",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS, Linux, Windows",
+        "url": "https://spacecorps.github.io/Sliplane-Cli/",
+        "description": "A blazing fast native command-line tool and agent interface for the Sliplane API (65 endpoints), written in Rust.",
+        "softwareVersion": "0.3.0",
+        "downloadUrl": "https://github.com/SpaceCorps/Sliplane-Cli/releases",
+        "license": "https://opensource.org/licenses/MIT",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "author": {
+          "@type": "Organization",
+          "name": "SpaceCorps",
+          "url": "https://github.com/SpaceCorps"
+        }
+      },
+      {
+        "@type": "Organization",
+        "name": "SpaceCorps",
+        "url": "https://github.com/SpaceCorps",
+        "sameAs": [
+          "https://github.com/SpaceCorps/Sliplane-Cli",
+          "https://github.com/SpaceCorps"
+        ],
+        "contactPoint": {
+          "@type": "ContactPoint",
+          "contactType": "technical support",
+          "url": "https://github.com/SpaceCorps/Sliplane-Cli/issues"
+        },
+        "address": {
+          "@type": "PostalAddress",
+          "addressCountry": "US"
+        }
+      }
+    ]
+  }
+  </script>
   <style>
     :root {
       --bg: #090d16;
@@ -454,6 +532,10 @@
       <ul class="nav-links">
         <li><a href="#quickstart">Quickstart</a></li>
         <li><a href="#commands">Commands</a></li>
+        <li><a href="about.html">About</a></li>
+        <li><a href="contact.html">Contact</a></li>
+        <li><a href="privacy.html">Privacy</a></li>
+        <li><a href="llms.txt">llms.txt</a></li>
         <li>
           <a class="btn-github" href="https://github.com/SpaceCorps/Sliplane-Cli" target="_blank" rel="noopener noreferrer">
             <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor">
@@ -535,6 +617,28 @@
           <p><span class="key">status:</span> deploying</p>
           <p><span class="key">serviceId:</span> srv_web</p>
         </div>
+      </div>
+    </section>
+
+    <!-- When to Use -->
+    <section style="margin-bottom: 70px;">
+      <h2 class="section-title">When To Use Sliplane CLI</h2>
+      <p class="section-sub">Guidance for engineers, automated pipelines, and autonomous AI agents.</p>
+      
+      <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; max-width: 900px; margin: 0 auto;">
+        <h3 style="color: #38bdf8; font-size: 1.15rem; margin-bottom: 12px;">Best-Fit Scenarios</h3>
+        <ul style="margin-left: 20px; margin-bottom: 24px; color: var(--text-muted); line-height: 1.8;">
+          <li><strong>Automated CI/CD Deployments:</strong> Trigger zero-downtime service deployments from GitHub Actions, GitLab CI, or terminal scripts.</li>
+          <li><strong>Autonomous AI Agents:</strong> Drive infrastructure changes deterministically using the built-in <code>--json</code> mode, structured error envelopes, and <code>sliplane agent-readme</code>.</li>
+          <li><strong>Database & Storage Management:</strong> Rapidly provision managed Postgres clusters, manage backups, create S3 buckets, and rotate access keys.</li>
+          <li><strong>Server Monitoring & Disk Rescaling:</strong> Monitor compute memory and CPU load, attach persistent storage volumes, and rescale data disks on the fly.</li>
+        </ul>
+
+        <h3 style="color: #c084fc; font-size: 1.15rem; margin-bottom: 12px;">When Not to Use</h3>
+        <ul style="margin-left: 20px; color: var(--text-muted); line-height: 1.8;">
+          <li>When you need visual drag-and-drop dashboard controls (use <a href="https://sliplane.io">sliplane.io</a>).</li>
+          <li>When interacting with other cloud vendors (Sliplane CLI targets the Sliplane OpenAPI 0.5.0 specification exclusively).</li>
+        </ul>
       </div>
     </section>
 
@@ -643,10 +747,14 @@ sliplane buckets keys create --server-id srv_1 --bucket-id bkt_1 --name app-key 
   <footer>
     <div class="container">
       <div class="footer-links">
-        <a href="https://github.com/SpaceCorps/Sliplane-Cli" target="_blank" rel="noopener noreferrer">GitHub Repository</a>
-        <a href="https://sliplane.io" target="_blank" rel="noopener noreferrer">Sliplane Platform</a>
+        <a href="about.html">About</a>
+        <a href="contact.html">Contact</a>
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="llms.txt">llms.txt</a>
+        <a href="sitemap.xml">Sitemap</a>
+        <a href="https://github.com/SpaceCorps/Sliplane-Cli" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://sliplane.io" target="_blank" rel="noopener noreferrer">Sliplane</a>
         <a href="https://ctrl.sliplane.io/spec.json" target="_blank" rel="noopener noreferrer">OpenAPI Spec (0.5.0)</a>
-        <a href="https://github.com/SpaceCorps" target="_blank" rel="noopener noreferrer">SpaceCorps</a>
       </div>
       <p>Sliplane CLI &bull; Maintained under SpaceCorps &bull; Licensed under MIT</p>
     </div>

@@ -1,0 +1,40 @@
+# Sliplane CLI - Comprehensive Agent Reference Manual
+
+> An exhaustive technical manual for autonomous agents driving the Sliplane CLI (`sliplane`). Covers all 65 endpoints of the Sliplane REST API v0 (spec 0.5.0).
+
+## When To Use This Tool
+- Automated deployment of web applications, APIs, and background workers on Sliplane cloud infrastructure.
+- Programmable scaling, resource monitoring, and maintenance of cloud servers.
+- Automated creation and secret rotation for managed PostgreSQL databases.
+- Management of S3-compatible object storage, IAM access keys, and CORS rules.
+- Continuous delivery scripts and GitHub Actions workflows requiring programmatic cloud actions.
+
+## Exit Codes and Error Envelopes
+
+Every error response on stderr conforms to the standard envelope structure:
+```json
+{
+  "code": "error_code_string",
+  "message": "Human readable summary",
+  "detail": "Extended debugging context",
+  "remediation": "Exact command or action needed to fix"
+}
+```
+
+Exit code numbers match the error code contract:
+- `0`: Success
+- `2`: Network / transport failure
+- `3`: `auth_required` - Token missing, expired, or revoked
+- `4`: `not_found` - Resource ID does not exist
+- `5`: `rate_limited` - API rate limit reached
+- `6`: `invalid_input` - Bad command flags, missing arguments, or invalid payload
+- `7`: `no_account` - `--account <name>` was not specified
+
+## Safety Guardrails
+
+1. **Environment Variables**:
+   Passing `--env` replaces the entire remote environment. The CLI will proactively reject any command that would cause secret deletion unless `--replace-env` or `--merge-env` is explicitly provided.
+2. **Account Scoping**:
+   There is intentionally no global default account fallback on mutating API commands. This ensures an agent never deploys or deletes in an unintended client workspace.
+3. **Secrets Isolation**:
+   API keys are stored in the host operating system's hardware-backed credential vault (macOS Keychain, Windows DPAPI, Linux Secret Service).

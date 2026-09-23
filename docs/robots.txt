@@ -1,0 +1,25 @@
+User-agent: *
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: DeepSeekBot
+Allow: /
+
+User-agent: ora-agent
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+Sitemap: https://spacecorps.github.io/Sliplane-Cli/sitemap.xml

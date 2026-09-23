@@ -1,0 +1,55 @@
+# Sliplane CLI
+
+> A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.5.0). Built in Rust for developers and autonomous AI agents.
+
+## When to Use This CLI
+
+Use the `sliplane` CLI whenever you need to:
+- **Deploy and manage web services:** Deploy Docker images or git repositories on Sliplane compute servers.
+- **Inspect server status & metrics:** Query server health, CPU usage, memory metrics, and attached storage volumes.
+- **Provision databases:** Spin up, restart, pause, backup, or retrieve credentials for managed PostgreSQL instances.
+- **Object storage:** Create S3-compatible buckets, configure CORS policies, and issue scoped access keys.
+- **Manage environment variables safely:** Update secrets and environment variables with safeguards that prevent unintended deletion.
+- **Agentic automation:** Drive deployments, diagnostics, and infrastructure changes deterministically via `--json` output and stable error exit codes.
+
+Do NOT use this tool if:
+- You need GUI-based visual management (use the web console at https://sliplane.io instead).
+- You are trying to interact with non-Sliplane hosting providers (e.g. AWS, Render, Fly).
+
+## Core Agent Operating Principles
+
+1. **Explicit Account Selection:** Always pass `--account <name>` (short `-a <name>`) on commands that touch the API. This guarantees multi-account safety and prevents accidental resource destruction.
+2. **First-Time Setup:** Run `sliplane login` to authenticate with your Sliplane account token (opens the browser to copy an API token) or use `pbpaste | sliplane login --api-key-stdin` in non-interactive environments.
+3. **Machine-Readable Outputs:** Always supply `--json` when parsing command results in scripts or LLM tool-calling loops.
+4. **Error Codes:** Non-zero exit codes carry structured error envelopes with stable machine-readable codes (`no_account`, `auth_required`, `not_found`, `rate_limited`, `invalid_input`).
+
+## Key Command Patterns
+
+### Authentication & Accounts
+- `sliplane login [name]`: Interactively authenticate and store the API token in the OS keystore.
+- `sliplane accounts list --check`: List all configured accounts and verify token validity.
+- `sliplane accounts test <name>`: Verify connectivity and inspect token identity.
+
+### Projects & Servers
+- `sliplane projects list -a <account> --json`: List all projects.
+- `sliplane projects create --name <name> -a <account> --json`: Create a new project.
+- `sliplane servers list -a <account> --json`: List servers and their resource allocation.
+- `sliplane servers metrics --server-id <id> -a <account> --json`: Query CPU and memory metrics.
+
+### Services & Deployments
+- `sliplane services list --project-id <id> -a <account> --json`: List services in a project.
+- `sliplane services deploy --project-id <p> --service-id <s> -a <account> --json`: Trigger a service deployment.
+- `sliplane services set-env --project-id <p> --service-id <s> --key <k> --value <v> -a <account>`: Safely set an environment variable.
+- `sliplane services logs --project-id <p> --service-id <s> -a <account>`: View container logs.
+
+### Managed PostgreSQL & Storage
+- `sliplane postgres list -a <account> --json`: List managed Postgres instances.
+- `sliplane postgres get --postgres-id <id> -a <account> --json`: Fetch connection details and credentials.
+- `sliplane buckets list -a <account> --json`: List S3 object storage buckets.
+- `sliplane buckets keys create --server-id <s> --bucket-id <b> --name <key-name> -a <account> --json`: Generate S3 access keys.
+
+## API Specification & Documentation
+- Full Documentation: https://spacecorps.github.io/Sliplane-Cli/
+- Detailed Agent Manual: https://spacecorps.github.io/Sliplane-Cli/llms-full.txt
+- Sliplane OpenAPI Spec: https://ctrl.sliplane.io/spec.json
+- MCP Server: https://github.com/sliplane/mcp
