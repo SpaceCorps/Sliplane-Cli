@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "skills": [
+    {
+      "name": "sliplane-cli",
+      "description": "Deploy web services, provision managed Postgres databases, query compute metrics, and manage S3 storage on Sliplane via Rust CLI.",
+      "type": "skill-md",
+      "url": "https://spacecorps.github.io/Sliplane-Cli/llms.txt",
+      "digest": "sha256:bc209ade5fcabf4e1f798e573cebb0245ec59733d1d1ca8666034e7d265b6f96"
+    }
+  ]
+}

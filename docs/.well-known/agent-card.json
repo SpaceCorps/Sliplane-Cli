@@ -1,0 +1,17 @@
+{
+  "name": "Sliplane CLI Agent",
+  "description": "Agent interface and cloud deployment tool for Sliplane Cloud infrastructure.",
+  "url": "https://spacecorps.github.io/Sliplane-Cli/",
+  "version": "0.1.0",
+  "capabilities": ["deploy", "compute", "database", "storage"],
+  "skills": [
+    {
+      "name": "sliplane-cli",
+      "url": "https://spacecorps.github.io/Sliplane-Cli/llms.txt"
+    }
+  ],
+  "contact": {
+    "email": "contact@spacecorps.dev",
+    "url": "https://spacecorps.github.io/Sliplane-Cli/contact.html"
+  }
+}

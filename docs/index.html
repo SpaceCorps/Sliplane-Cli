@@ -31,8 +31,14 @@
   <meta name="twitter:image" content="https://spacecorps.github.io/Sliplane-Cli/og-image.png">
 
   <!-- AI Agents & Discovery -->
+  <link rel="alternate" type="text/markdown" href="https://spacecorps.github.io/Sliplane-Cli/index.md" title="Markdown Homepage">
   <link rel="alternate" type="text/markdown" href="https://spacecorps.github.io/Sliplane-Cli/llms.txt" title="LLMs.txt">
   <link rel="sitemap" type="application/xml" href="https://spacecorps.github.io/Sliplane-Cli/sitemap.xml" title="Sitemap">
+  <script>
+    if (new URLSearchParams(window.location.search).get('mode') === 'agent') {
+      window.location.href = 'llms.txt';
+    }
+  </script>
 
   <!-- Favicon -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
