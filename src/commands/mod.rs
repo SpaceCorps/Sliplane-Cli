@@ -2,6 +2,7 @@
 //! own modules (`accounts`, `services`).
 
 mod accounts;
+mod login;
 mod services;
 
 use serde_json::{Value, json};
@@ -15,6 +16,7 @@ use crate::{obj, output};
 pub fn run(command: Command) -> Result<()> {
     match command {
         Command::Me(a) => print(client(&a)?.get("me")?),
+        Command::Login(c) => login::run(c),
         Command::AgentReadme => {
             crate::readme::print();
             Ok(())

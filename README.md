@@ -8,11 +8,11 @@ A single static binary, written in Rust. It starts in a millisecond or two; the 
 replaces took about 75 ms before it made its first request.
 
 ```bash
-cargo install --git https://github.com/rorychatt/Sliplane.Console --locked
+cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked
 ```
 
 Or download a prebuilt binary for macOS, Linux or Windows from the
-[releases page](https://github.com/rorychatt/Sliplane.Console/releases). Config and keystore
+[releases page](https://github.com/SpaceCorps/Sliplane-Cli/releases). Config and keystore
 entries are the same as the .NET version's, so accounts you added with it keep working.
 
 Checked against Sliplane API spec **0.5.0** (`https://ctrl.sliplane.io/spec.json`), which has
@@ -71,10 +71,18 @@ arguments that look like Unix paths before this program sees them, so
 not prevent it. The CLI detects the result and refuses rather than deploying a
 service whose healthchecks can never pass.
 
-## Accounts
+## Accounts & Authentication
 
-One machine usually holds keys for more than one Sliplane account, so keys are configured by
-name and the name is required on every command. Add an account once:
+To log in interactively, run `sliplane login`. It will open your browser to the Sliplane dashboard to generate or copy an API token, prompt for the key securely, verify it, and store it in your OS keystore:
+
+```bash
+sliplane login                      # logs in, saves as account 'default'
+sliplane login work                 # logs in with a specific account name
+sliplane login --api-key sl_...     # non-interactive login with API key
+pbpaste | sliplane login --api-key-stdin # pipe token from stdin
+```
+
+You can also use `sliplane accounts add`:
 
 ```bash
 sliplane accounts add work --api-key sl_your_api_key
@@ -137,6 +145,7 @@ Every command below takes `--account <name>` (short `-a`), except `accounts *` a
 | Command | Description |
 |---------|-------------|
 | `me` | Get current identity and token context |
+| `login` | Log in with a Sliplane API token (opens browser to copy token) |
 | `agent-readme` | Print the operating manual for an LLM agent |
 | **Accounts** | |
 | `accounts add` | Add an account and store its API key in the OS keystore |

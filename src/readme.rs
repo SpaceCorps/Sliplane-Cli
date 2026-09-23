@@ -62,6 +62,7 @@ guess when more than one is configured.
 
 ### Managing accounts
 
+    sliplane login [<name>] [--api-key <key>]  # opens browser to copy API token
     sliplane accounts add <name> --api-key <key> [--force]
     printf %s "$KEY" | sliplane accounts add <name> --api-key-stdin
     sliplane accounts list [--check]

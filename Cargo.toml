@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "CLI for the Sliplane API - manage servers, services, Postgres, buckets and more"
 license = "MIT"
-repository = "https://github.com/rorychatt/Sliplane.Console"
+repository = "https://github.com/SpaceCorps/Sliplane-Cli"
 readme = "README.md"
 
 [[bin]]

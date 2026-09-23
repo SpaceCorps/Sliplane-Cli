@@ -38,6 +38,8 @@ pub struct Account {
 pub enum Command {
     /// Get current identity and token context
     Me(Account),
+    /// Log in with a Sliplane API token (opens browser to copy token)
+    Login(Login),
     /// Print the operating manual for an LLM agent driving this CLI
     AgentReadme,
     /// Manage Sliplane accounts and their API keys
@@ -64,6 +66,40 @@ pub enum Command {
     /// Manage OAuth clients
     #[command(subcommand)]
     Oauth(OAuth),
+}
+
+// ---------------------------------------------------------------------------------------------
+// login
+
+#[derive(Args, Clone)]
+pub struct Login {
+    /// Account name to store (default: "default")
+    #[arg(value_name = "NAME", default_value = "default")]
+    pub name: String,
+
+    /// Sliplane API key / token (prompted for securely if omitted)
+    #[arg(long, value_name = "KEY", conflicts_with = "api_key_stdin")]
+    pub api_key: Option<String>,
+
+    /// Read the API key from stdin, e.g. `pbpaste | sliplane login --api-key-stdin`
+    #[arg(long)]
+    pub api_key_stdin: bool,
+
+    /// Organization ID sent as X-Organization-ID. Legacy only - current keys embed the organization
+    #[arg(long, value_name = "ORG_ID")]
+    pub org_id: Option<String>,
+
+    /// Do not open the browser to the API keys page automatically
+    #[arg(long)]
+    pub no_browser: bool,
+
+    /// Replace the key on an account that already exists
+    #[arg(long)]
+    pub force: bool,
+
+    /// Store the key without calling the API to check it first
+    #[arg(long)]
+    pub no_verify: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

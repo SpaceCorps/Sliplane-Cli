@@ -629,3 +629,33 @@ fn agent_readme_as_data() {
     let md = String::from_utf8(env.run(&["agent-readme"]).stdout).unwrap();
     assert!(md.starts_with("# sliplane - agent operating manual"));
 }
+
+#[test]
+fn login_command_lifecycle() {
+    let mock = Mock::start(vec![me(), me(), me()]);
+    let env = Env::new(&mock);
+
+    // Login with default name "default"
+    let (code, out, err) = env.json(&["login", "--api-key", "sl_login_test"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "logged_in");
+    assert_eq!(out["name"], "default");
+    assert_eq!(out["identity"], "dev@example.com");
+    assert_eq!(out["organization"], "org_1");
+    assert_eq!(out["secretStore"], "plaintext");
+
+    // Re-login without --force fails
+    let (code, _, err) = env.json(&["login", "--api-key", "sl_new_key"]);
+    assert_eq!(code, 6);
+    assert!(err["remediation"].as_str().unwrap().contains("--force"));
+
+    // Re-login with --force succeeds
+    let (code, out, _) = env.json(&["login", "--api-key", "sl_new_key", "--force"]);
+    assert_eq!(code, 0);
+    assert_eq!(out["status"], "logged_in");
+
+    // Login with named account
+    let (code, out, _) = env.json(&["login", "staging", "--api-key", "sl_staging"]);
+    assert_eq!(code, 0);
+    assert_eq!(out["name"], "staging");
+}
