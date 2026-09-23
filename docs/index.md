@@ -1,3 +1,11 @@
+---
+title: "Sliplane CLI"
+description: "A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.5.0). Built in Rust for developers and autonomous AI agents."
+author: "SpaceCorps"
+date: "2026-09-23"
+canonical: "https://spacecorps.github.io/index.md"
+---
+
 # Sliplane CLI
 
 A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.5.0). Built in Rust for developers and autonomous AI agents.
@@ -31,8 +39,8 @@ Use the `sliplane` CLI whenever you need to:
 
 ## Documentation Links
 
-- [llms.txt](https://spacecorps.github.io/Sliplane-Cli/llms.txt)
-- [Full Agent Manual](https://spacecorps.github.io/Sliplane-Cli/llms-full.txt)
-- [Pricing](https://spacecorps.github.io/Sliplane-Cli/pricing.md)
-- [Authentication Guide](https://spacecorps.github.io/Sliplane-Cli/auth.md)
+- [llms.txt](https://spacecorps.github.io/llms.txt)
+- [Full Agent Manual](https://spacecorps.github.io/llms-full.txt)
+- [Pricing](https://spacecorps.github.io/pricing.md)
+- [Authentication Guide](https://spacecorps.github.io/auth.md)
 - [GitHub Repository](https://github.com/SpaceCorps/Sliplane-Cli)
