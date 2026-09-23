@@ -1,6 +1,6 @@
 [package]
 name = "sliplane"
-version = "0.3.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.89"
 description = "CLI for the Sliplane API - manage servers, services, Postgres, buckets and more"
