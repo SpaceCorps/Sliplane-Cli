@@ -3,6 +3,8 @@
  * WCAG AA Contrast Audited & Standardized Across All SpaceCorps Web Properties
  */
 
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800;900&display=swap');
+
 :root {
   --background: #ffffff;
   --foreground: #09090b;
@@ -10,23 +12,25 @@
   --card-foreground: #09090b;
   --popover: #ffffff;
   --popover-foreground: #09090b;
-  --primary: #18181b;
-  --primary-foreground: #fafafa;
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
+  --primary-foreground: #ffffff;
+  --primary-glow: rgba(99, 102, 241, 0.3);
   --secondary: #f4f4f5;
   --secondary-foreground: #18181b;
   --muted: #f4f4f5;
   --muted-foreground: #64646b;
-  --accent: #f4f4f5;
-  --accent-foreground: #18181b;
+  --accent: #38bdf8;
+  --accent-foreground: #ffffff;
   --destructive: #ef4444;
-  --destructive-foreground: #000000;
-  --success: #22c55e;
-  --success-foreground: #000000;
+  --destructive-foreground: #ffffff;
+  --success: #10b981;
+  --success-foreground: #ffffff;
   --warning: #f59e0b;
   --warning-foreground: #000000;
   --info: #3b82f6;
-  --info-foreground: #000000;
-  --cyan: #0369a1;
+  --info-foreground: #ffffff;
+  --cyan: #38bdf8;
   --purple: #7e22ce;
   --pink: #be185d;
   --violet: #6d28d9;
@@ -74,10 +78,10 @@
   --fuchsia-foreground: #ffffff;
   --rose: #be123c;
   --rose-foreground: #ffffff;
-  --cyan-foreground: #ffffff;
-  --purple-foreground: #ffffff;
-  --pink-foreground: #ffffff;
-  --violet-foreground: #ffffff;
+
+  /* Typography */
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
   /* Letter spacing base */
   --tracking-normal: 0em;
@@ -94,16 +98,14 @@
 
   --border: #e4e4e7;
   --input: #e4e4e7;
-  --ring: #18181b;
-  --radius: 0.5rem;
-  --radius-boxes: 8px;
-  --radius-fields: 6px;
-  --radius-selectors: 4px;
+  --ring: #6366f1;
+  --radius: 10px;
+  --radius-boxes: 10px;
+  --radius-fields: 8px;
+  --radius-selectors: 6px;
   --shadow-boxes: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
   --shadow-fields: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --shadow-selectors: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --font-sans: "Geist Variable", "Geist", "Geist Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   /* Aliases for convenience & backward compatibility */
   --bg: var(--background);
@@ -112,8 +114,7 @@
   --text-dim: #71717a;
   --bg-card: var(--card);
   --bg-card-hover: rgba(0, 0, 0, 0.04);
-  --border-accent: rgba(0, 204, 146, 0.35);
-  --primary-glow: rgba(0, 204, 146, 0.25);
+  --border-accent: rgba(99, 102, 241, 0.35);
   --accent-glow: rgba(56, 189, 248, 0.2);
   --code-bg: #f4f4f5;
   --radius-sm: var(--radius-selectors);
@@ -124,97 +125,55 @@
 .dark,
 [data-theme="dark"],
 html:not([data-theme="light"]) {
-  --background: #09090b;
-  --foreground: #fafafa;
-  --card: #121215;
-  --card-foreground: #fafafa;
-  --popover: #09090b;
-  --popover-foreground: #fafafa;
-  --primary: #fafafa;
-  --primary-foreground: #18181b;
-  --secondary: #27272a;
-  --secondary-foreground: #fafafa;
-  --muted: #27272a;
-  --muted-foreground: #a1a1aa;
-  --accent: #27272a;
-  --accent-foreground: #fafafa;
-  --destructive: #7f1d1d;
-  --destructive-foreground: #fafafa;
-  --success: #15803d;
+  --background: #090d16;
+  --foreground: #f1f5f9;
+  --card: #121624;
+  --card-foreground: #f1f5f9;
+  --popover: #0e1320;
+  --popover-foreground: #f1f5f9;
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
+  --primary-foreground: #ffffff;
+  --primary-glow: rgba(99, 102, 241, 0.35);
+  --secondary: #1a2236;
+  --secondary-foreground: #f1f5f9;
+  --muted: #1e263d;
+  --muted-foreground: #94a3b8;
+  --accent: #38bdf8;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --success: #10b981;
   --success-foreground: #ffffff;
-  --warning: #b45309;
-  --warning-foreground: #ffffff;
-  --info: #1d4ed8;
+  --warning: #f59e0b;
+  --warning-foreground: #000000;
+  --info: #38bdf8;
   --info-foreground: #ffffff;
   --cyan: #38bdf8;
-  --purple: #c084fc;
+  --purple: #818cf8;
   --pink: #f472b6;
   --violet: #a78bfa;
 
-  /* Named palette colors */
-  --ivy-green: #00cc92;
-  --ivy-green-foreground: #000000;
-  --slate: #94a3b8;
-  --slate-foreground: #000000;
-  --gray: #9ca3af;
-  --gray-foreground: #000000;
-  --zinc: #a1a1aa;
-  --zinc-foreground: #000000;
-  --neutral: #a3a3a3;
-  --neutral-foreground: #000000;
-  --stone: #a8a29e;
-  --stone-foreground: #000000;
-  --black: #000000;
-  --black-foreground: #ffffff;
-  --white: #ffffff;
-  --white-foreground: #000000;
-  --red: #f87171;
-  --red-foreground: #000000;
-  --orange: #fb923c;
-  --orange-foreground: #000000;
-  --amber: #fbbf24;
-  --amber-foreground: #000000;
-  --yellow: #facc15;
-  --yellow-foreground: #000000;
-  --lime: #a3e635;
-  --lime-foreground: #000000;
-  --green: #4ade80;
-  --green-foreground: #000000;
-  --emerald: #34d399;
-  --emerald-foreground: #000000;
-  --teal: #2dd4bf;
-  --teal-foreground: #000000;
-  --sky: #38bdf8;
-  --sky-foreground: #000000;
-  --blue: #60a5fa;
-  --blue-foreground: #000000;
-  --indigo: #818cf8;
-  --indigo-foreground: #000000;
-  --fuchsia: #e879f9;
-  --fuchsia-foreground: #000000;
-  --rose: #fb7185;
-  --rose-foreground: #000000;
-  --cyan-foreground: #000000;
-  --purple-foreground: #000000;
-  --pink-foreground: #000000;
-  --violet-foreground: #000000;
-
-  --border: #27272a;
-  --input: #27272a;
-  --ring: #d4d4d8;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.12);
+  --ring: #6366f1;
 
   /* Aliases */
-  --bg: #09090b;
-  --text: #fafafa;
-  --text-muted: #a1a1aa;
-  --text-dim: #71717a;
-  --bg-card: rgba(18, 18, 21, 0.75);
-  --bg-card-hover: rgba(28, 28, 35, 0.9);
-  --border-accent: rgba(0, 204, 146, 0.35);
-  --primary-glow: rgba(0, 204, 146, 0.25);
+  --bg: #090d16;
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --bg-card: rgba(18, 22, 36, 0.75);
+  --bg-card-hover: rgba(28, 35, 58, 0.85);
+  --border-accent: rgba(99, 102, 241, 0.35);
   --accent-glow: rgba(56, 189, 248, 0.2);
-  --code-bg: #050507;
+  --code-bg: #0b0f19;
   --radius-sm: var(--radius-selectors);
+}
+
+/* Base Typography Enforcement */
+html, body, button, input, select, textarea {
+  font-family: var(--font-sans);
 }
 
 /* ==========================================================================
@@ -223,22 +182,24 @@ html:not([data-theme="light"]) {
 
 /* ---------- TUI Badges ---------- */
 .tui-badge {
-  --tui-fg: var(--foreground, #ffffff);
-  --tui-muted-bg: var(--muted, #27272a);
+  --tui-fg: #f1f5f9;
+  --tui-muted-bg: rgba(99, 102, 241, 0.15);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 2px 6px;
-  border: 0.5px solid transparent;
-  border-radius: var(--radius-selectors, 4px);
+  padding: 3px 8px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: var(--radius-selectors, 6px);
   background: var(--tui-muted-bg);
-  color: var(--tui-fg);
+  color: #a5b4fc;
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 13px;
   white-space: nowrap;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .tui-badge--count {
@@ -249,30 +210,30 @@ html:not([data-theme="light"]) {
 
 .tui-badge[data-kind="project"],
 .tui-badge-project {
-  background: color-mix(in srgb, var(--info, #1e3a6d) 28%, var(--card, #000000));
-  color: color-mix(in srgb, var(--info, #bcd6ff) 40%, var(--foreground, #ffffff));
-  border-color: color-mix(in srgb, var(--info, #38bdf8) 35%, transparent);
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border-color: rgba(99, 102, 241, 0.35);
 }
 
 .tui-badge[data-kind="success"],
 .tui-badge-success {
-  background: color-mix(in srgb, var(--ivy-green) 20%, var(--card, #000000));
-  color: var(--ivy-green);
-  border-color: color-mix(in srgb, var(--ivy-green) 35%, transparent);
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.35);
 }
 
 .tui-badge[data-kind="warning"],
 .tui-badge-warning {
-  background: color-mix(in srgb, var(--warning) 25%, var(--card, #000000));
+  background: rgba(245, 158, 11, 0.15);
   color: #fbbf24;
-  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  border-color: rgba(245, 158, 11, 0.35);
 }
 
 .tui-badge[data-kind="danger"],
 .tui-badge-danger {
-  background: color-mix(in srgb, var(--destructive) 25%, var(--card, #000000));
+  background: rgba(239, 68, 68, 0.15);
   color: #f87171;
-  border-color: color-mix(in srgb, var(--destructive) 35%, transparent);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 /* ---------- TUI Keyboard Hints ---------- */
@@ -286,13 +247,13 @@ html:not([data-theme="light"]) {
 
 .tui-kbd--boxed,
 kbd.tui-kbd {
-  height: 18px;
-  min-width: 18px;
+  height: 20px;
+  min-width: 20px;
   justify-content: center;
-  padding: 0 5px;
+  padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--muted) 50%, transparent);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--foreground);
   font-size: 11px;
   line-height: 1;
@@ -309,18 +270,18 @@ kbd.tui-kbd {
 }
 
 .tui-dot--success {
-  background: var(--ivy-green);
-  box-shadow: 0 0 8px rgba(0, 204, 146, 0.4);
+  background: var(--success);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
 }
 
 .tui-dot--warning {
   background: var(--warning);
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
 }
 
 .tui-dot--danger {
   background: var(--destructive);
-  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
 }
 
 .tui-status {
@@ -334,7 +295,7 @@ kbd.tui-kbd {
 
 /* ---------- Tooltips ---------- */
 .tui-tooltip-content {
-  border-radius: var(--radius-selectors, 4px);
+  border-radius: var(--radius-selectors, 6px);
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--foreground);
@@ -342,7 +303,7 @@ kbd.tui-kbd {
   font-size: 12px;
   line-height: 16px;
   font-weight: 500;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
 }
 
 /* ---------- Standard SpaceCorps Buttons ---------- */
@@ -352,11 +313,11 @@ kbd.tui-kbd {
   justify-content: center;
   gap: 8px;
   white-space: nowrap;
-  border-radius: var(--radius-fields, 6px);
+  border-radius: var(--radius-fields, 8px);
   font-family: var(--font-sans);
   font-weight: 600;
   font-size: 0.95rem;
-  padding: 10px 20px;
+  padding: 11px 22px;
   transition: all 0.15s ease;
   cursor: pointer;
   text-decoration: none;
@@ -364,28 +325,28 @@ kbd.tui-kbd {
 }
 
 .btn-primary {
-  background: var(--ivy-green);
-  color: #000000;
-  border-color: var(--ivy-green);
-  box-shadow: 0 2px 12px rgba(0, 204, 146, 0.3);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: var(--primary);
+  box-shadow: 0 4px 20px var(--primary-glow);
 }
 
 .btn-primary:hover {
-  background: #00e6a5;
-  color: #000000;
+  background: var(--primary-hover);
+  color: #ffffff;
   transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(0, 204, 146, 0.4);
+  box-shadow: 0 6px 24px rgba(99, 102, 241, 0.5);
 }
 
 .btn-secondary {
-  background: rgba(39, 39, 42, 0.6);
+  background: rgba(22, 27, 46, 0.8);
   border: 1px solid var(--border);
-  color: var(--foreground);
+  color: #ffffff;
   backdrop-filter: blur(8px);
 }
 
 .btn-secondary:hover {
-  background: rgba(63, 63, 70, 0.7);
+  background: rgba(30, 38, 66, 0.9);
   border-color: rgba(255, 255, 255, 0.25);
   color: #ffffff;
 }
@@ -402,9 +363,9 @@ kbd.tui-kbd {
 }
 
 .btn-sm {
-  padding: 6px 12px;
+  padding: 6px 14px;
   font-size: 0.85rem;
-  border-radius: var(--radius-selectors, 4px);
+  border-radius: var(--radius-selectors, 6px);
 }
 
 /* ---------- Standard SpaceCorps Cards ---------- */
@@ -413,7 +374,7 @@ kbd.tui-kbd {
 .stat-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-boxes, 8px);
+  border-radius: var(--radius-boxes, 10px);
   padding: 24px;
   backdrop-filter: blur(12px);
   transition: all 0.2s ease;
@@ -449,14 +410,14 @@ code {
 .terminal-box {
   background: var(--code-bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius-boxes, 8px);
+  border-radius: var(--radius-boxes, 10px);
   overflow: hidden;
 }
 
 .terminal-header {
   background: rgba(255, 255, 255, 0.03);
   border-bottom: 1px solid var(--border);
-  padding: 8px 16px;
+  padding: 10px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
