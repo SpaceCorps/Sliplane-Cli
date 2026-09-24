@@ -1,0 +1,466 @@
+/* SpaceCorps Design Tokens & UI Component Stylesheet
+ * Sourced directly from @spacecorps/components (SpaceCorps/storybook)
+ * WCAG AA Contrast Audited & Standardized Across All SpaceCorps Web Properties
+ */
+
+:root {
+  --background: #ffffff;
+  --foreground: #09090b;
+  --card: #ffffff;
+  --card-foreground: #09090b;
+  --popover: #ffffff;
+  --popover-foreground: #09090b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #64646b;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #ef4444;
+  --destructive-foreground: #000000;
+  --success: #22c55e;
+  --success-foreground: #000000;
+  --warning: #f59e0b;
+  --warning-foreground: #000000;
+  --info: #3b82f6;
+  --info-foreground: #000000;
+  --cyan: #0369a1;
+  --purple: #7e22ce;
+  --pink: #be185d;
+  --violet: #6d28d9;
+
+  /* Named palette colors */
+  --ivy-green: #00cc92;
+  --ivy-green-foreground: #000000;
+  --slate: #334155;
+  --slate-foreground: #ffffff;
+  --gray: #374151;
+  --gray-foreground: #ffffff;
+  --zinc: #3f3f46;
+  --zinc-foreground: #ffffff;
+  --neutral: #404040;
+  --neutral-foreground: #ffffff;
+  --stone: #44403c;
+  --stone-foreground: #ffffff;
+  --black: #000000;
+  --black-foreground: #ffffff;
+  --white: #ffffff;
+  --white-foreground: #000000;
+  --red: #b91c1c;
+  --red-foreground: #ffffff;
+  --orange: #c2410c;
+  --orange-foreground: #ffffff;
+  --amber: #b45309;
+  --amber-foreground: #ffffff;
+  --yellow: #a16207;
+  --yellow-foreground: #ffffff;
+  --lime: #4d7c0f;
+  --lime-foreground: #ffffff;
+  --green: #15803d;
+  --green-foreground: #ffffff;
+  --emerald: #047857;
+  --emerald-foreground: #ffffff;
+  --teal: #0f766e;
+  --teal-foreground: #ffffff;
+  --sky: #0369a1;
+  --sky-foreground: #ffffff;
+  --blue: #1d4ed8;
+  --blue-foreground: #ffffff;
+  --indigo: #4338ca;
+  --indigo-foreground: #ffffff;
+  --fuchsia: #a21caf;
+  --fuchsia-foreground: #ffffff;
+  --rose: #be123c;
+  --rose-foreground: #ffffff;
+  --cyan-foreground: #ffffff;
+  --purple-foreground: #ffffff;
+  --pink-foreground: #ffffff;
+  --violet-foreground: #ffffff;
+
+  /* Letter spacing base */
+  --tracking-normal: 0em;
+
+  /* Shadow ramp */
+  --shadow-2xs: 0 1px 2px 0 hsl(0 0% 0% / 0.03);
+  --shadow-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.03);
+  --shadow-sm: 0 1px 3px 0 hsl(0 0% 0% / 0.06), 0 1px 2px -1px hsl(0 0% 0% / 0.06);
+  --shadow: 0 2px 4px 0 hsl(0 0% 0% / 0.06), 0 1px 2px -1px hsl(0 0% 0% / 0.06);
+  --shadow-md: 0 4px 6px -1px hsl(0 0% 0% / 0.06), 0 2px 4px -2px hsl(0 0% 0% / 0.06);
+  --shadow-lg: 0 10px 15px -3px hsl(0 0% 0% / 0.06), 0 4px 6px -4px hsl(0 0% 0% / 0.06);
+  --shadow-xl: 0 20px 25px -5px hsl(0 0% 0% / 0.06), 0 8px 10px -6px hsl(0 0% 0% / 0.06);
+  --shadow-2xl: 0 25px 50px -12px hsl(0 0% 0% / 0.15);
+
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #18181b;
+  --radius: 0.5rem;
+  --radius-boxes: 8px;
+  --radius-fields: 6px;
+  --radius-selectors: 4px;
+  --shadow-boxes: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  --shadow-fields: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-selectors: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --font-sans: "Geist Variable", "Geist", "Geist Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Aliases for convenience & backward compatibility */
+  --bg: var(--background);
+  --text: var(--foreground);
+  --text-muted: var(--muted-foreground);
+  --text-dim: #71717a;
+  --bg-card: var(--card);
+  --bg-card-hover: rgba(0, 0, 0, 0.04);
+  --border-accent: rgba(0, 204, 146, 0.35);
+  --primary-glow: rgba(0, 204, 146, 0.25);
+  --accent-glow: rgba(56, 189, 248, 0.2);
+  --code-bg: #f4f4f5;
+  --radius-sm: var(--radius-selectors);
+}
+
+/* Dark Mode (Default for SpaceCorps Ecosystem & Terminal/Agent UI) */
+:root.dark,
+.dark,
+[data-theme="dark"],
+html:not([data-theme="light"]) {
+  --background: #09090b;
+  --foreground: #fafafa;
+  --card: #121215;
+  --card-foreground: #fafafa;
+  --popover: #09090b;
+  --popover-foreground: #fafafa;
+  --primary: #fafafa;
+  --primary-foreground: #18181b;
+  --secondary: #27272a;
+  --secondary-foreground: #fafafa;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --accent: #27272a;
+  --accent-foreground: #fafafa;
+  --destructive: #7f1d1d;
+  --destructive-foreground: #fafafa;
+  --success: #15803d;
+  --success-foreground: #ffffff;
+  --warning: #b45309;
+  --warning-foreground: #ffffff;
+  --info: #1d4ed8;
+  --info-foreground: #ffffff;
+  --cyan: #38bdf8;
+  --purple: #c084fc;
+  --pink: #f472b6;
+  --violet: #a78bfa;
+
+  /* Named palette colors */
+  --ivy-green: #00cc92;
+  --ivy-green-foreground: #000000;
+  --slate: #94a3b8;
+  --slate-foreground: #000000;
+  --gray: #9ca3af;
+  --gray-foreground: #000000;
+  --zinc: #a1a1aa;
+  --zinc-foreground: #000000;
+  --neutral: #a3a3a3;
+  --neutral-foreground: #000000;
+  --stone: #a8a29e;
+  --stone-foreground: #000000;
+  --black: #000000;
+  --black-foreground: #ffffff;
+  --white: #ffffff;
+  --white-foreground: #000000;
+  --red: #f87171;
+  --red-foreground: #000000;
+  --orange: #fb923c;
+  --orange-foreground: #000000;
+  --amber: #fbbf24;
+  --amber-foreground: #000000;
+  --yellow: #facc15;
+  --yellow-foreground: #000000;
+  --lime: #a3e635;
+  --lime-foreground: #000000;
+  --green: #4ade80;
+  --green-foreground: #000000;
+  --emerald: #34d399;
+  --emerald-foreground: #000000;
+  --teal: #2dd4bf;
+  --teal-foreground: #000000;
+  --sky: #38bdf8;
+  --sky-foreground: #000000;
+  --blue: #60a5fa;
+  --blue-foreground: #000000;
+  --indigo: #818cf8;
+  --indigo-foreground: #000000;
+  --fuchsia: #e879f9;
+  --fuchsia-foreground: #000000;
+  --rose: #fb7185;
+  --rose-foreground: #000000;
+  --cyan-foreground: #000000;
+  --purple-foreground: #000000;
+  --pink-foreground: #000000;
+  --violet-foreground: #000000;
+
+  --border: #27272a;
+  --input: #27272a;
+  --ring: #d4d4d8;
+
+  /* Aliases */
+  --bg: #09090b;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --text-dim: #71717a;
+  --bg-card: rgba(18, 18, 21, 0.75);
+  --bg-card-hover: rgba(28, 28, 35, 0.9);
+  --border-accent: rgba(0, 204, 146, 0.35);
+  --primary-glow: rgba(0, 204, 146, 0.25);
+  --accent-glow: rgba(56, 189, 248, 0.2);
+  --code-bg: #050507;
+  --radius-sm: var(--radius-selectors);
+}
+
+/* ==========================================================================
+   SpaceCorps UI Component Primitives (TUI & Design System)
+   ========================================================================== */
+
+/* ---------- TUI Badges ---------- */
+.tui-badge {
+  --tui-fg: var(--foreground, #ffffff);
+  --tui-muted-bg: var(--muted, #27272a);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 0.5px solid transparent;
+  border-radius: var(--radius-selectors, 4px);
+  background: var(--tui-muted-bg);
+  color: var(--tui-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+.tui-badge--count {
+  min-width: 18px;
+  padding: 2px 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tui-badge[data-kind="project"],
+.tui-badge-project {
+  background: color-mix(in srgb, var(--info, #1e3a6d) 28%, var(--card, #000000));
+  color: color-mix(in srgb, var(--info, #bcd6ff) 40%, var(--foreground, #ffffff));
+  border-color: color-mix(in srgb, var(--info, #38bdf8) 35%, transparent);
+}
+
+.tui-badge[data-kind="success"],
+.tui-badge-success {
+  background: color-mix(in srgb, var(--ivy-green) 20%, var(--card, #000000));
+  color: var(--ivy-green);
+  border-color: color-mix(in srgb, var(--ivy-green) 35%, transparent);
+}
+
+.tui-badge[data-kind="warning"],
+.tui-badge-warning {
+  background: color-mix(in srgb, var(--warning) 25%, var(--card, #000000));
+  color: #fbbf24;
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.tui-badge[data-kind="danger"],
+.tui-badge-danger {
+  background: color-mix(in srgb, var(--destructive) 25%, var(--card, #000000));
+  color: #f87171;
+  border-color: color-mix(in srgb, var(--destructive) 35%, transparent);
+}
+
+/* ---------- TUI Keyboard Hints ---------- */
+.tui-kbd {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.tui-kbd--boxed,
+kbd.tui-kbd {
+  height: 18px;
+  min-width: 18px;
+  justify-content: center;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--muted) 50%, transparent);
+  color: var(--foreground);
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* ---------- TUI Status Dot & Line ---------- */
+.tui-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+.tui-dot--success {
+  background: var(--ivy-green);
+  box-shadow: 0 0 8px rgba(0, 204, 146, 0.4);
+}
+
+.tui-dot--warning {
+  background: var(--warning);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+}
+
+.tui-dot--danger {
+  background: var(--destructive);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+.tui-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--muted-foreground);
+}
+
+/* ---------- Tooltips ---------- */
+.tui-tooltip-content {
+  border-radius: var(--radius-selectors, 4px);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* ---------- Standard SpaceCorps Buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+  border-radius: var(--radius-fields, 6px);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 10px 20px;
+  transition: all 0.15s ease;
+  cursor: pointer;
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+
+.btn-primary {
+  background: var(--ivy-green);
+  color: #000000;
+  border-color: var(--ivy-green);
+  box-shadow: 0 2px 12px rgba(0, 204, 146, 0.3);
+}
+
+.btn-primary:hover {
+  background: #00e6a5;
+  color: #000000;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(0, 204, 146, 0.4);
+}
+
+.btn-secondary {
+  background: rgba(39, 39, 42, 0.6);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  backdrop-filter: blur(8px);
+}
+
+.btn-secondary:hover {
+  background: rgba(63, 63, 70, 0.7);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+.btn-outline:hover {
+  background: var(--muted);
+  border-color: var(--muted-foreground);
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  border-radius: var(--radius-selectors, 4px);
+}
+
+/* ---------- Standard SpaceCorps Cards ---------- */
+.card,
+.feature-card,
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-boxes, 8px);
+  padding: 24px;
+  backdrop-filter: blur(12px);
+  transition: all 0.2s ease;
+}
+
+.card:hover,
+.feature-card:hover {
+  border-color: var(--border-accent);
+  background: var(--bg-card-hover);
+  transform: translateY(-2px);
+}
+
+.card-title {
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--foreground);
+  margin-bottom: 8px;
+}
+
+.card-description {
+  font-size: 0.9rem;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+/* ---------- Code & Terminal Blocks ---------- */
+.code-block,
+pre,
+code {
+  font-family: var(--font-mono);
+}
+
+.terminal-box {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-boxes, 8px);
+  overflow: hidden;
+}
+
+.terminal-header {
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+}

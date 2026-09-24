@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -91,26 +91,29 @@
     ]
   }
   </script>
+  <!-- SpaceCorps Design System Tokens & UI Components -->
+  <link rel="stylesheet" href="tokens.css">
   <style>
     :root {
-      --bg: #090d16;
-      --bg-card: rgba(22, 27, 46, 0.7);
-      --bg-card-hover: rgba(30, 38, 66, 0.85);
-      --border: rgba(255, 255, 255, 0.1);
-      --border-accent: rgba(99, 102, 241, 0.35);
-      --text: #f1f5f9;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
-      --primary: #6366f1;
-      --primary-hover: #4f46e5;
-      --primary-glow: rgba(99, 102, 241, 0.25);
-      --accent: #38bdf8;
-      --success: #10b981;
-      --code-bg: #0d1117;
-      --radius: 12px;
-      --radius-sm: 8px;
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --bg: var(--background);
+      --bg-card: rgba(18, 18, 21, 0.75);
+      --bg-card-hover: rgba(28, 28, 35, 0.9);
+      --border: var(--border);
+      --border-accent: rgba(0, 204, 146, 0.35);
+      --text: var(--foreground);
+      --text-muted: var(--muted-foreground);
+      --text-dim: #71717a;
+      --primary: var(--ivy-green);
+      --primary-hover: #00e6a5;
+      --primary-glow: rgba(0, 204, 146, 0.25);
+      --accent: var(--cyan);
+      --accent-glow: rgba(56, 189, 248, 0.2);
+      --success: var(--ivy-green);
+      --code-bg: #050507;
+      --radius: var(--radius-boxes, 8px);
+      --radius-sm: var(--radius-selectors, 4px);
+      --font-sans: var(--font-sans);
+      --font-mono: var(--font-mono);
     }
 
     * {
@@ -129,7 +132,7 @@
       display: flex;
       flex-direction: column;
       background-image: 
-        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99, 102, 241, 0.18), transparent),
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 204, 146, 0.15), transparent),
         radial-gradient(circle 400px at 90% 20%, rgba(56, 189, 248, 0.08), transparent);
     }
 
@@ -227,9 +230,9 @@
       gap: 8px;
       padding: 6px 14px;
       border-radius: 9999px;
-      background: rgba(99, 102, 241, 0.12);
+      background: rgba(0, 204, 146, 0.1);
       border: 1px solid var(--border-accent);
-      color: #c7d2fe;
+      color: var(--ivy-green);
       font-size: 0.85rem;
       font-weight: 500;
       margin-bottom: 24px;
