@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-online-success)](https://spacecorps.github.io/Sliplane-Cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A blazing fast, native command-line tool and agent interface for the [Sliplane](https://sliplane.io) cloud hosting platform API (v0, OpenAPI spec 0.5.0). Built in Rust for developers and autonomous AI workflows.
+A blazing fast, native command-line tool and agent interface for the [Sliplane](https://sliplane.io) cloud hosting platform API (v0, OpenAPI spec 0.10.0). Built in Rust for developers and autonomous AI workflows.
 
 ---
 
@@ -91,7 +91,7 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 | Command | Description |
 |:---|:---|
 | `sliplane login [name]` | Interactively authenticate with your API token and save it to the OS keystore |
-| `sliplane me` | Query identity, email, and organization context for the active token |
+| `sliplane me` | Query identity, organization and the token's scopes (e.g. `services:write`, `secrets:read`) |
 | `sliplane accounts list [--check]` | List configured accounts (pass `--check` to verify token validity) |
 | `sliplane accounts test <name>` | Test credentials for a specific account |
 | `sliplane accounts add <name>` | Manually add an account and API key to the keystore |
@@ -110,8 +110,9 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 | `sliplane servers create --name <n> --instance-type <t> --location <loc>` | Provision a new compute server |
 | `sliplane servers rescale --server-id <id> --instance-type <t>` | Scale server instance size up |
 | `sliplane servers rescale-disk --server-id <id> --disk-size <gb>` | Expand server storage volume disk size |
-| `sliplane servers metrics --server-id <id>` | Query CPU and memory utilization metrics |
+| `sliplane servers metrics --server-id <id> [--range 1h \| --from <ts> --to <ts>]` | Query CPU, memory and disk utilization metrics |
 | `sliplane servers volumes --server-id <id>` | List attached persistent storage volumes |
+| `sliplane servers rename-volume --server-id <id> --volume-id <v> --name <n>` | Rename a volume (services are not redeployed) |
 
 ### Services & Deployments
 
@@ -127,6 +128,9 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 | `sliplane services set-env --project-id <p> --service-id <s> --key <k> --value <v>` | Safely set or update a single environment variable |
 | `sliplane services delete-env --project-id <p> --service-id <s> --key <k>` | Remove a single environment variable |
 | `sliplane services add-domain / remove-domain` | Configure custom domain routing |
+| `sliplane services attach-volume --project-id <p> --service-id <s> --volume <id-or-name>:/path` | Mount a volume and redeploy |
+| `sliplane services update-volume --project-id <p> --service-id <s> --volume-id <v> --mount-path /path` | Change a mount path and redeploy |
+| `sliplane services detach-volume --project-id <p> --service-id <s> --volume-id <v>` | Unmount a volume and redeploy (the data is kept) |
 
 ### Managed PostgreSQL & Storage
 
@@ -138,10 +142,23 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 | `sliplane postgres update --postgres-id <id> --ip-allow <cidr>=<label>` | Update instance configuration or IP allowlist |
 | `sliplane postgres rotate-credentials --postgres-id <id>` | Rotate database access password |
 | `sliplane postgres slow-queries / top-queries` | Inspect query performance and call frequency |
+| `sliplane postgres metrics --postgres-id <id> [--range 1h \| --from <ts> --to <ts>]` | CPU, memory, disk and connection history |
 | `sliplane buckets list` | List S3-compatible object storage buckets |
 | `sliplane buckets create --name <n> --region <r>` | Create an S3 object storage bucket |
 | `sliplane buckets keys --bucket-id <id>` | List S3 access keys |
 | `sliplane buckets create-key --bucket-id <id> --name <label>` | Generate scoped S3 access key and secret |
+
+### SSH Access & Pricing
+
+| Command | Description |
+|:---|:---|
+| `sliplane ssh-keys list` | List your SSH public keys |
+| `sliplane ssh-keys create --name <n> (--public-key <key> \| --public-key-file <path>) [--expires-at <rfc3339>]` | Register a public key (optionally self-deleting, 5 minutes to 30 days) |
+| `sliplane ssh-keys delete --key-id <id>` | Delete a key (detach it from every service first) |
+| `sliplane services ssh-keys --project-id <p> --service-id <s>` | List the keys attached to a service |
+| `sliplane services attach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Attach a key; prints the host, port and username to connect with |
+| `sliplane services detach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Detach a key |
+| `sliplane pricing` | Standard prices for servers, Postgres and object storage (excl. tax) |
 
 ---
 
@@ -198,6 +215,7 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - Use `services set-env` to change a single variable safely.
 2. **Preserving Secrets**:
    - In Sliplane, secret values are write-only and read back as empty strings. `--merge-env` safely retains existing secrets without exposing or overwriting them.
+   - API keys have per-area permissions, and **Secrets: Read** is one of them. Without it *every* environment value and database password reads back empty, not only the secret ones, so `--merge-env` would overwrite plain variables with nothing. The CLI refuses that (`auth_required`) and points you to `services set-env` or a key with Secrets: Read. `sliplane me` lists a key's scopes, and `accounts add` / `accounts test` warn when `secrets:read` is missing.
 3. **Carrying Over Deployments**:
    - `services update` automatically carries over existing deployment parameters (branch, Dockerfile path, build context, path filters) so they do not inadvertently revert to defaults.
 4. **Volume Resolution**:

@@ -1,6 +1,6 @@
 ---
 title: "Sliplane CLI"
-description: "A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.5.0). Built in Rust for developers and autonomous AI agents."
+description: "A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.10.0). Built in Rust for developers and autonomous AI agents."
 author: "SpaceCorps"
 date: "2026-09-23"
 canonical: "https://spacecorps.github.io/index.md"
@@ -8,7 +8,7 @@ canonical: "https://spacecorps.github.io/index.md"
 
 # Sliplane CLI
 
-A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.5.0). Built in Rust for developers and autonomous AI agents.
+A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.10.0). Built in Rust for developers and autonomous AI agents.
 
 ## Quickstart
 
