@@ -53,12 +53,14 @@ fn add(name: String, api_key: Option<String>, org_id: Option<String>, force: boo
     let org_id = org_id.map(|o| o.trim().to_string()).unwrap_or_default();
 
     let (mut ident, mut org) = (String::new(), String::new());
+    let mut warning = None;
     if !no_verify {
         // Verify before storing: a key that does not work is worse than no account at all,
         // because every later failure looks like a problem with the command being run.
         let me = Client::new(&key, Some(&org_id)).get("me")?;
         ident = identity::describe(&me);
         org = identity::organization(&me);
+        warning = secrets_warning(&me);
     }
 
     {
@@ -80,7 +82,7 @@ fn add(name: String, api_key: Option<String>, org_id: Option<String>, force: boo
         config::save(&config)?;
     }
 
-    print(obj! {
+    let mut result = obj! {
         "status" => if existing.is_none() { "added" } else { "replaced" },
         "name" => name,
         "identity" => ident,
@@ -90,6 +92,21 @@ fn add(name: String, api_key: Option<String>, org_id: Option<String>, force: boo
         "secretStore" => store.name(),
         "configDir" => config::config_dir().display().to_string(),
         "nextStep" => format!("sliplane projects list --account {name}"),
+    };
+    if let Some(w) = warning {
+        result["warning"] = Value::String(w);
+    }
+    print(result)
+}
+
+/// A key without `secrets:read` works, but every environment value and database password reads
+/// back empty - and `services update --merge-env` has to refuse. Better said when the key is
+/// added than discovered by a command that quietly returns nothing.
+fn secrets_warning(me: &Value) -> Option<String> {
+    (!identity::can_read_secrets(me)).then(|| {
+        "This key has no secrets:read scope: environment values and database passwords read back empty. \
+         Create a key with Secrets: Read at https://sliplane.io/app/team/api if you need them."
+            .to_string()
     })
 }
 
@@ -178,6 +195,7 @@ fn test(name: &str) -> Result<()> {
     let me = account.client().get("me")?;
     let ident = identity::describe(&me);
     let org = identity::organization(&me);
+    let secrets_note = secrets_warning(&me);
 
     let mut result = obj! {
         "name" => account.name,
@@ -190,8 +208,13 @@ fn test(name: &str) -> Result<()> {
 
     // Drift means the key was replaced with one belonging to somewhere else - worth saying out
     // loud, because every command run against this account now goes somewhere new.
-    if let Some(w) = drift(&account.config.identity, &ident).or_else(|| drift(&account.config.organization, &org)) {
-        result["warning"] = Value::String(w);
+    let warnings: Vec<String> = drift(&account.config.identity, &ident)
+        .or_else(|| drift(&account.config.organization, &org))
+        .into_iter()
+        .chain(secrets_note)
+        .collect();
+    if !warnings.is_empty() {
+        result["warning"] = Value::String(warnings.join(" "));
     }
     print(result)
 }

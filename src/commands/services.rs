@@ -8,9 +8,9 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{Deploy, ServiceRef, Services};
 use crate::client::{Client, query, seg};
-use crate::commands::{client, done, print};
-use crate::error::{Error, Result};
-use crate::{obj, patharg};
+use crate::commands::{client, done, metrics_query, print};
+use crate::error::{Error, ErrorCode, Result};
+use crate::{account, obj, patharg};
 
 pub fn run(c: Services) -> Result<()> {
     match c {
@@ -54,14 +54,7 @@ pub fn run(c: Services) -> Result<()> {
             let q = query(&[("from", from.map(|v| v.to_string())), ("to", to.map(|v| v.to_string()))]);
             print(client(&s.a)?.get(&path(&s, &format!("/logs{q}")))?)
         }
-        Services::Metrics { s, r } => {
-            let q = query(&[
-                ("range", Some(r.range).filter(|v| !v.is_empty())),
-                ("from", r.from.map(|v| v.to_string())),
-                ("to", r.to.map(|v| v.to_string())),
-            ]);
-            print(client(&s.a)?.get(&path(&s, &format!("/metrics{q}")))?)
-        }
+        Services::Metrics { s, r } => print(client(&s.a)?.get(&path(&s, &format!("/metrics{}", metrics_query(&r))))?),
         Services::Events(s) => print(client(&s.a)?.get(&path(&s, "/events"))?),
         Services::ListEnv(s) => print(client(&s.a)?.get(&path(&s, "/env"))?),
         Services::SetEnv { s, key, value, secret } => {
@@ -79,7 +72,45 @@ pub fn run(c: Services) -> Result<()> {
             let r = client(&s.a)?.delete(&path(&s, &format!("/domains/{}", seg(&domain_id))))?;
             done(r, "deleted", with(ids(&s), "domainId", &domain_id))
         }
+        Services::AttachVolume { s, volume } => {
+            let client = client(&s.a)?;
+            let server_id = server_of(&client, &s)?;
+            let body = resolve_volumes(&client, &server_id, &[volume])?.remove(0);
+            print(client.post(&path(&s, "/volumes"), &body)?)
+        }
+        Services::UpdateVolume { s, volume_id, mount_path } => {
+            let mount = patharg::check(&mount_path, "--mount-path")?;
+            if !mount.starts_with('/') {
+                return Err(Error::invalid(format!(
+                    "--mount-path '{mount}' is not an absolute path.                      On Windows, run from PowerShell or cmd rather than Git Bash."
+                )));
+            }
+            let body = json!({ "mountPath": mount });
+            print(client(&s.a)?.patch(&path(&s, &format!("/volumes/{}", seg(&volume_id))), &body)?)
+        }
+        Services::DetachVolume { s, volume_id } => {
+            let r = client(&s.a)?.delete(&path(&s, &format!("/volumes/{}", seg(&volume_id))))?;
+            done(r, "detached", with(ids(&s), "volumeId", &volume_id))
+        }
+        Services::SshKeys(s) => print(client(&s.a)?.get(&path(&s, "/ssh-keys"))?),
+        Services::AttachSshKey { s, key_id } => {
+            print(client(&s.a)?.put_empty(&path(&s, &format!("/ssh-keys/{}", seg(&key_id))))?)
+        }
+        Services::DetachSshKey { s, key_id } => {
+            let r = client(&s.a)?.delete(&path(&s, &format!("/ssh-keys/{}", seg(&key_id))))?;
+            done(r, "detached", with(ids(&s), "keyId", &key_id))
+        }
     }
+}
+
+/// The server a service runs on - a volume name only means something relative to one server.
+fn server_of(client: &Client, s: &ServiceRef) -> Result<String> {
+    let service = client.get(&path(s, ""))?;
+    service
+        .get("serverId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| Error::other("The service did not report which server it runs on."))
 }
 
 fn path(s: &ServiceRef, tail: &str) -> String {
@@ -428,7 +459,9 @@ fn update(
 ///
 /// Default: refuse, and name what would be lost. `--replace-env`: send exactly what was given.
 /// `--merge-env`: carry every unlisted variable over. Secrets read back masked, so they are sent
-/// with an empty value, which the API documents as "keep the stored value".
+/// with an empty value, which the API documents as "keep the stored value". Plain variables are
+/// sent with the value just read - so a key without `secrets:read`, which reads every value back
+/// empty, would overwrite them all with nothing. That case is refused.
 fn env_for_update(current: &mut Current, supplied: Vec<Value>, replace: bool, merge: bool) -> Result<Vec<Value>> {
     if replace {
         return Ok(supplied);
@@ -440,6 +473,24 @@ fn env_for_update(current: &mut Current, supplied: Vec<Value>, replace: bool, me
         existing.iter().filter(|e| e.get("key").and_then(Value::as_str).is_some_and(|k| !keys.contains(k))).collect();
 
     if merge {
+        let plain: Vec<&str> = dropped
+            .iter()
+            .filter(|e| !e.get("secret").and_then(Value::as_bool).unwrap_or(false))
+            .filter_map(|e| e.get("key").and_then(Value::as_str))
+            .collect();
+        if !plain.is_empty() && !account::identity::can_read_secrets(&current.client.get("me")?) {
+            return Err(Error::new(
+                ErrorCode::AuthRequired,
+                format!(
+                    "This API key cannot read environment values (it has no secrets:read scope), so --merge-env                      would overwrite {} variable(s) with empty values: {}.",
+                    plain.len(),
+                    plain.join(", ")
+                ),
+            )
+            .fix(
+                "Use a key with Secrets: Read (https://sliplane.io/app/team/api; `sliplane me` lists a key's scopes),                  or change variables one at a time with `services set-env`.",
+            ));
+        }
         let mut out: Vec<Value> = dropped
             .into_iter()
             .map(|e| {

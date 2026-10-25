@@ -1,6 +1,6 @@
 # Sliplane CLI
 
-> A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.5.0). Built in Rust for developers and autonomous AI agents.
+> A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.10.0). Built in Rust for developers and autonomous AI agents.
 
 ## When to Use This CLI
 
@@ -34,19 +34,28 @@ Do NOT use this tool if:
 - `sliplane projects list -a <account> --json`: List all projects.
 - `sliplane projects create --name <name> -a <account> --json`: Create a new project.
 - `sliplane servers list -a <account> --json`: List servers and their resource allocation.
-- `sliplane servers metrics --server-id <id> -a <account> --json`: Query CPU and memory metrics.
+- `sliplane servers metrics --server-id <id> -a <account> --json`: Query CPU, memory and disk metrics.
+- `sliplane servers rename-volume --server-id <id> --volume-id <v> --name <n> -a <account>`: Rename a server volume.
 
 ### Services & Deployments
 - `sliplane services list --project-id <id> -a <account> --json`: List services in a project.
 - `sliplane services deploy --project-id <p> --service-id <s> -a <account> --json`: Trigger a service deployment.
 - `sliplane services set-env --project-id <p> --service-id <s> --key <k> --value <v> -a <account>`: Safely set an environment variable.
 - `sliplane services logs --project-id <p> --service-id <s> -a <account>`: View container logs.
+- `sliplane services attach-volume|update-volume|detach-volume --project-id <p> --service-id <s> ...`: Mount, move or unmount a volume (each redeploys the service; detached data is kept).
+- `sliplane services ssh-keys|attach-ssh-key|detach-ssh-key --project-id <p> --service-id <s> ...`: Manage SSH access to a service.
 
 ### Managed PostgreSQL & Storage
 - `sliplane postgres list -a <account> --json`: List managed Postgres instances.
 - `sliplane postgres get --postgres-id <id> -a <account> --json`: Fetch connection details and credentials.
+- `sliplane postgres metrics --postgres-id <id> -a <account> --json`: CPU, memory, disk and connection history.
 - `sliplane buckets list -a <account> --json`: List S3 object storage buckets.
 - `sliplane buckets keys create --server-id <s> --bucket-id <b> --name <key-name> -a <account> --json`: Generate S3 access keys.
+
+### SSH Keys, Pricing & Token Scopes
+- `sliplane ssh-keys list|create|delete -a <account> --json`: Manage your SSH public keys (`create` takes `--public-key` or `--public-key-file`, optional `--expires-at`).
+- `sliplane pricing -a <account> --json`: Standard prices for servers, Postgres and object storage.
+- `sliplane me -a <account> --json`: Identity plus the key's `scopes`. Without `secrets:read`, environment values and database passwords read back empty, and `services update --merge-env` refuses to run.
 
 ## API Specification & Documentation
 - Full Documentation: https://spacecorps.github.io/Sliplane-Cli/

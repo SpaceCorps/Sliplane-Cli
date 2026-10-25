@@ -104,7 +104,10 @@ are documented in `agent-readme` and in the README; changing a number breaks cal
 **`--env` replaces the whole environment, and the CLI refuses to do it by accident.** The API takes
 the array it is given. `services update` names what would be lost and requires `--merge-env` or `--replace-env`;
 `services set-env` is the single-variable path. Secret values read back empty; `--merge-env` sends
-them back empty, which the API documents (spec 0.5.0, PATCH service) as "keep the stored value".
+them back empty, which the API documents (PATCH service) as "keep the stored value". **Plain values
+read back empty too when the key lacks `secrets:read`** (spec 0.10.0), and are *not* kept when sent
+empty, so `env_for_update` asks `me` for the key's scopes and refuses a merge that would carry a plain
+variable over with such a key. A key with no `scopes` field is a legacy key with full access.
 
 **`services update` sends the whole current deployment.** The spec gives the deployment fields
 defaults (`branch: main`, `dockerfilePath: Dockerfile`, `autoDeploy: true`), so a PATCH carrying only
@@ -148,8 +151,8 @@ clock is not unique enough: two tests once shared a directory and deleted each o
 ## Sliplane API notes
 
 The spec is at `https://ctrl.sliplane.io/spec.json` (rendered at `https://ctrl.sliplane.io/`, and as
-markdown at `/llms.txt`). This build was checked against **0.5.0** (`readme::API_VERSION`); the
-server reports its version in the `x-api-version` header. A copy is kept in `spec/sliplane-openapi-0.5.0.json`. When the
+markdown at `/llms.txt`). This build was checked against **0.10.0** (`readme::API_VERSION`); the
+server reports its version in the `x-api-version` header. A copy is kept in `spec/sliplane-openapi-0.10.0.json`. When the
 live version moves, fetch it, diff it against that copy, bring `src/cli.rs` up to date, and replace
 the copy.
 
@@ -167,8 +170,8 @@ No list endpoint paginates. Service logs return at most 500 lines, counting back
 limits: server create 50/h, server rescale 10/h, service create and deploy 10/min, else 400/min.
 There is no GET for a single project or bucket, and no server rename.
 
-`me` answers with `authType` (`oauth`/`apikey`/`agent`), `tokenType` (`ro`/`rw`), `organizationId`
-and a nested `user`. `account::identity` reads the label from `user.email` and the organization from
+`me` answers with `authType` (`oauth`/`apikey`/`agent`), `tokenType` (`ro`/`rw`), `organizationId`,
+`scopes` (e.g. `services:write`, `secrets:read`; absent on a legacy key) and a nested `user`. `account::identity` reads the label from `user.email` and the organization from
 `organizationId`, probing alternatives rather than binding to that one shape.
 
 ## Releasing
