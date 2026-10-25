@@ -26,7 +26,7 @@ pub fn print() {
 }
 
 /// The Sliplane API spec (`https://ctrl.sliplane.io/spec.json`) this build was checked against.
-pub const API_VERSION: &str = "0.5.0";
+pub const API_VERSION: &str = "0.10.0";
 
 const RULES: &[&str] = &[
     "Always pass --account. There is no default account and no environment variable.",
@@ -34,6 +34,7 @@ const RULES: &[&str] = &[
     "On code auth_required, stop and surface the remediation string. Do not retry.",
     "--env replaces the whole environment. Use 'services set-env' to change one variable, or --merge-env to keep the rest.",
     "Secret env values read back empty, so they cannot be copied between services.",
+    "A key without the secrets:read scope reads every env value and database password back empty. 'sliplane me' lists a key's scopes; check it before copying values around.",
     "A service cannot move between a registry image and a repository build; it must be recreated.",
     "Deletes are irreversible and take no confirmation. Read the resource back before deleting it.",
     "Use --json when you are going to parse the output.",
@@ -41,8 +42,8 @@ const RULES: &[&str] = &[
 
 const README: &str = r#"# sliplane - agent operating manual
 
-A CLI over the Sliplane API (v0, spec 0.5.0): servers, services, Postgres databases, buckets,
-registry credentials and OAuth clients. Results are YAML on stdout, errors are YAML on stderr,
+A CLI over the Sliplane API (v0, spec 0.10.0): servers, services, Postgres databases, buckets,
+registry credentials, SSH keys and OAuth clients. Results are YAML on stdout, errors are YAML on stderr,
 and `--json` switches both to JSON. Prompts and warnings go to stderr, so stdout is always safe
 to parse - including for deletes and other actions that return no body, which print a small
 `status:` object.
@@ -82,7 +83,10 @@ reports `valid`, `rejected` or `unreachable` instead.
 you report the result, because the key keeps working anywhere else it was copied.
 
 Read-only keys can only read: anything that changes state fails with `auth_required` and
-`read_only_token` in the detail.
+`read_only_token` in the detail. Keys are also scoped per area (`services:write`, `postgres:read`,
+`secrets:read`, ...): a call outside the key's scopes fails with `auth_required` and a plain 403.
+`sliplane me` lists the scopes of the key you are using, and `accounts add` / `accounts test`
+warn when it lacks `secrets:read`.
 
 ## Reading
 
@@ -95,7 +99,10 @@ Read-only keys can only read: anything that changes state fails with `auth_requi
     sliplane services logs --project-id <id> --service-id <id> -a <account> [--from <unix>] [--to <unix>]
     sliplane services events --project-id <id> --service-id <id> -a <account>
     sliplane postgres list -a <account>
+    sliplane postgres metrics --postgres-id <id> -a <account> [--range 10min|1h|24h | --from <unix> --to <unix>]
     sliplane buckets list -a <account>
+    sliplane ssh-keys list -a <account>
+    sliplane pricing -a <account>
 
 `services list` without `--project-id` walks every project, one API call per project (run in
 parallel). Pass the project when you know it.
@@ -116,8 +123,16 @@ than constructing them. There is no API to get a single project or bucket by id 
     sliplane services set-env --project-id <id> --service-id <id> --key K --value V [--secret]
     sliplane services delete-env --project-id <id> --service-id <id> --key K
     sliplane services pause|unpause --project-id <id> --service-id <id>
+    sliplane services attach-volume --project-id <id> --service-id <id> --volume <id-or-name>:/path
+    sliplane services update-volume --project-id <id> --service-id <id> --volume-id <id> --mount-path /path
+    sliplane services detach-volume --project-id <id> --service-id <id> --volume-id <id>
+    sliplane servers rename-volume --server-id <id> --volume-id <id> --name <name>
+    sliplane ssh-keys create --name <name> (--public-key <key> | --public-key-file <path>) [--expires-at <rfc3339>]
+    sliplane ssh-keys delete --key-id <id>
+    sliplane services attach-ssh-key|detach-ssh-key --project-id <id> --service-id <id> --key-id <id>
+    sliplane services ssh-keys --project-id <id> --service-id <id>
 
-Five behaviours that will otherwise cost you data:
+Six behaviours that will otherwise cost you data:
 
 1. **`--env` replaces the entire environment.** It is not a merge - the API takes the array it
    is given, so passing two variables to a service that holds three deletes the third. The CLI
@@ -126,7 +141,10 @@ Five behaviours that will otherwise cost you data:
    `services set-env`, which leaves the rest alone.
 2. **Secret values are write-only.** They read back empty, so they cannot be copied from one
    service to another. Sending a secret back with an empty value keeps its stored value, which
-   is how `--merge-env` preserves secrets it cannot read.
+   is how `--merge-env` preserves secrets it cannot read. A key without the `secrets:read` scope
+   reads *every* value back empty, plain ones included, and a plain variable sent back empty is
+   overwritten with nothing - so `--merge-env` refuses (`auth_required`) when it would carry a
+   plain variable over with such a key. Use `services set-env`, or a key with Secrets: Read.
 3. **A service cannot move between a registry image and a repository build.** The API answers
    `409`. The service has to be deleted and recreated; volumes are server-level resources and
    survive, so data on them is not lost.
@@ -135,13 +153,25 @@ Five behaviours that will otherwise cost you data:
    branch, Dockerfile, context and registry credentials rather than resetting them to defaults.
    `--branch`, `--dockerfile` and `--docker-context` work on their own; after the update the CLI
    checks the returned service and fails if the change did not take effect.
-5. **Network settings and volumes are fixed at creation.** `services update` cannot change
-   `--public`, `--protocol` or volumes. `--protocol` applies only to a `--public` service.
+5. **Network settings are fixed at creation, and volume changes redeploy.** `services update`
+   cannot change `--public` or `--protocol`; `--protocol` applies only to a `--public` service.
+   Volumes change through `attach-volume`, `update-volume` and `detach-volume`, each of which
+   redeploys the service. A detached volume keeps its data on the server and can be attached
+   again. A volume *name* given to `attach-volume` mounts the existing volume of that name on
+   the service's server, or creates one if there is none.
+6. **SSH keys are per user, and attaching one opens a login.** `ssh-keys create` takes the public
+   half only (a private key is refused). `services attach-ssh-key` prints the host, port and
+   username to connect with. A key that is still attached to a service cannot be deleted
+   (`409 ssh_key_in_use`); detach it first. `--expires-at` makes a key delete itself, and its
+   access, between 5 minutes and 30 days from now.
 
 Deletes (`services delete`, `projects delete`, `servers delete`, `postgres delete`,
 `buckets delete`) are irreversible and ask nothing. Read the resource back first and confirm
 with the human that it is the one they meant - including which account it is in. A project must
 be empty of services before it can be deleted.
+
+While an organization is in maintenance mode, reads work and anything that changes a resource
+or deploys fails with HTTP 423 (`organization_maintenance`, exit code 1). Wait, then repeat.
 
 Rate limits: server creation 50/hour, server rescale 10/hour, service creation and deploys
 10/minute each, everything else 400/minute. Exceeding one exits with `rate_limited`.

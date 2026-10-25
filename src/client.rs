@@ -76,6 +76,11 @@ impl Client {
         self.send(Method::Put, path, Some(body))
     }
 
+    /// PUT with no body at all - attaching an SSH key to a service.
+    pub fn put_empty(&self, path: &str) -> Result<Value> {
+        self.send(Method::Put, path, None)
+    }
+
     pub fn patch(&self, path: &str, body: &Value) -> Result<Value> {
         self.send(Method::Patch, path, Some(body))
     }
@@ -188,10 +193,15 @@ pub fn status_error(status: u16, body: &str) -> Error {
                 .fix("Ask Sliplane support (support@sliplane.io) to enable it.")
         }
         403 => Error::new(ErrorCode::AuthRequired, "The API key is not allowed to do that.").fix(
-            "Check the key is read-write and belongs to the right organization. A legacy token also needs one: \
+            "Check the key's permissions for this area (`sliplane me` lists its scopes) and that it belongs to the \
+             right organization. A legacy token also needs one: \
              sliplane accounts add <name> --api-key <key> --org-id <id> --force",
         ),
         404 => Error::new(ErrorCode::NotFound, "The resource does not exist."),
+        423 if api_code == "organization_maintenance" => {
+            Error::other("The organization is in maintenance mode: reads work, changes and deploys are rejected.")
+                .fix("Wait for maintenance to end, then repeat the command.")
+        }
         429 => Error::new(ErrorCode::RateLimited, "Rate limited by the Sliplane API.")
             .fix("Back off before retrying."),
         400 | 422 => Error::new(ErrorCode::InvalidInput, "The API refused the request."),
@@ -214,6 +224,10 @@ fn hint(status: u16, body: &str) -> &'static str {
     if status == 409 && lower.contains("project_not_empty") {
         return "\n\nA project must be empty before it can be deleted. Delete its services first \
                 (sliplane services list --project-id <id>).";
+    }
+    if status == 409 && lower.contains("ssh_key_in_use") {
+        return "\n\nThe key is still attached to a service. Detach it first \
+                (sliplane services ssh-keys, then sliplane services detach-ssh-key).";
     }
     if status == 400 && lower.contains("deployment configuration is required") {
         return "\n\nEvery update needs the deployment object. Pass --repo/--branch (or --image) \
@@ -268,6 +282,8 @@ mod tests {
         assert_eq!(status_error(422, "").code, ErrorCode::InvalidInput);
         assert_eq!(status_error(503, "").code, ErrorCode::Network);
         assert_eq!(status_error(409, "").code, ErrorCode::Error);
+        assert_eq!(status_error(423, r#"{"code":"organization_maintenance","message":"x"}"#).code, ErrorCode::Error);
+        assert!(status_error(409, r#"{"code":"ssh_key_in_use"}"#).detail.unwrap().contains("detach-ssh-key"));
         assert!(status_error(409, "deployment type").detail.unwrap().contains("recreate"));
         let ro = status_error(403, r#"{"code":"read_only_token","message":"read only"}"#);
         assert_eq!(ro.code, ErrorCode::AuthRequired);

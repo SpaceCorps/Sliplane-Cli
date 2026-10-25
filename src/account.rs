@@ -97,6 +97,17 @@ pub mod identity {
             .unwrap_or_default()
     }
 
+    /// Whether the key may read environment values and database passwords. Without `secrets:read`
+    /// the API answers 200 with those values emptied - nothing fails, it just reads back as nothing.
+    /// A key from before scopes existed has no `scopes` field and keeps its old access, secrets
+    /// included.
+    pub fn can_read_secrets(me: &Value) -> bool {
+        match me.get("scopes").and_then(Value::as_array) {
+            Some(scopes) => scopes.iter().any(|s| s.as_str() == Some("secrets:read")),
+            None => true,
+        }
+    }
+
     fn nested(root: &Value, property: &str, names: &[&str]) -> Option<String> {
         root.get(property).filter(|c| c.is_object()).and_then(|c| first_string(c, names))
     }
@@ -118,6 +129,15 @@ pub mod identity {
             let me = json!({"authType": "api_key", "organizationId": "org_1", "user": {"email": "a@b.c", "name": "A"}});
             assert_eq!(super::describe(&me), "a@b.c");
             assert_eq!(super::organization(&me), "org_1");
+        }
+
+        #[test]
+        fn secrets_scope() {
+            assert!(super::can_read_secrets(&json!({"scopes": ["services:write", "secrets:read"]})));
+            assert!(!super::can_read_secrets(&json!({"scopes": ["services:write", "services:read"]})));
+            assert!(!super::can_read_secrets(&json!({"scopes": []})));
+            // A legacy key reports no scopes at all and keeps full access.
+            assert!(super::can_read_secrets(&json!({"authType": "apikey", "tokenType": "rw"})));
         }
 
         #[test]

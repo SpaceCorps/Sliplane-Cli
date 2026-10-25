@@ -66,6 +66,11 @@ pub enum Command {
     /// Manage OAuth clients
     #[command(subcommand)]
     Oauth(OAuth),
+    /// Manage SSH keys for service SSH access
+    #[command(subcommand, name = "ssh-keys")]
+    SshKeys(SshKeys),
+    /// List standard prices for servers, Postgres and object storage
+    Pricing(Account),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -198,14 +203,14 @@ pub struct ServerId {
 
 #[derive(Args)]
 pub struct Range {
-    /// Predefined time range: 10min, 1h, 24h, 7d
-    #[arg(long, default_value = "1h")]
-    pub range: String,
-    /// From timestamp (Unix seconds)
-    #[arg(long, value_name = "TIMESTAMP")]
+    /// Predefined time range: 10min, 1h, 24h, 7d (Postgres has no 7d). Default 1h; not with --from/--to
+    #[arg(long, conflicts_with_all = ["from", "to"])]
+    pub range: Option<String>,
+    /// From timestamp (Unix seconds). Needs --to
+    #[arg(long, value_name = "TIMESTAMP", requires = "to")]
     pub from: Option<i64>,
-    /// To timestamp (Unix seconds)
-    #[arg(long, value_name = "TIMESTAMP")]
+    /// To timestamp (Unix seconds). Needs --from
+    #[arg(long, value_name = "TIMESTAMP", requires = "from")]
     pub to: Option<i64>,
 }
 
@@ -222,7 +227,7 @@ pub enum Servers {
         name: String,
         #[arg(long, value_name = "TYPE", help = format!("Instance type: {INSTANCE_TYPES}"))]
         instance_type: String,
-        /// Location: ger, fin, us-east, us-west, sin, conf (Confidential Germany - enabled by support, dedicated types only). Legacy: fsn, nbg, hel, ash, hil
+        /// Location: ger, fin, us-east, us-west, sin, conf (Germany (Confidential) - needs the Confidential Data Agreement accepted under Team > Compliance, dedicated types only). Legacy: fsn, nbg, hel, ash, hil
         #[arg(long)]
         location: String,
         /// Larger data disk than bundled with the instance type: 50, 100, 250, 500, 1000
@@ -267,6 +272,17 @@ pub enum Servers {
     /// Create a volume on a server
     CreateVolume {
         /// The name of the volume
+        #[arg(long)]
+        name: String,
+        #[command(flatten)]
+        s: ServerId,
+    },
+    /// Rename a server volume (services using it are not redeployed)
+    RenameVolume {
+        /// The ID of the volume
+        #[arg(long, value_name = "ID")]
+        volume_id: String,
+        /// The new name of the volume
         #[arg(long)]
         name: String,
         #[command(flatten)]
@@ -466,6 +482,51 @@ pub enum Services {
         #[arg(long, value_name = "ID")]
         domain_id: String,
     },
+    /// Mount a volume on a service and redeploy it
+    AttachVolume {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// Volume as id:/path or name:/path. A name resolves to the existing volume of that name on the service's server, or creates one
+        #[arg(long, value_name = "VOLUME")]
+        volume: String,
+    },
+    /// Change where a volume is mounted in a service and redeploy it
+    UpdateVolume {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// The ID of the volume
+        #[arg(long, value_name = "ID")]
+        volume_id: String,
+        /// The new mount path inside the container, e.g. /data
+        #[arg(long, value_name = "PATH")]
+        mount_path: String,
+    },
+    /// Unmount a volume from a service and redeploy it (the volume and its data are kept)
+    DetachVolume {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// The ID of the volume
+        #[arg(long, value_name = "ID")]
+        volume_id: String,
+    },
+    /// List the SSH keys attached to a service
+    SshKeys(ServiceRef),
+    /// Attach an SSH key to a service; prints the host, port and username to connect with
+    AttachSshKey {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// The ID of the SSH key (see 'sliplane ssh-keys list')
+        #[arg(long, value_name = "ID")]
+        key_id: String,
+    },
+    /// Detach an SSH key from a service
+    DetachSshKey {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// The ID of the SSH key
+        #[arg(long, value_name = "ID")]
+        key_id: String,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -503,7 +564,7 @@ pub enum Postgres {
         name: String,
         #[arg(long, value_name = "TYPE", help = format!("Instance type: {INSTANCE_TYPES}"))]
         instance_type: String,
-        /// Region: ger, fin, us-east, us-west, sin, conf (Confidential Germany - enabled by support, dedicated types only)
+        /// Region: ger, fin, us-east, us-west, sin, conf (Germany (Confidential) - needs the Confidential Data Agreement accepted under Team > Compliance, dedicated types only)
         #[arg(long)]
         region: String,
         /// PostgreSQL major version (default and only supported today: 18)
@@ -568,6 +629,13 @@ pub enum Postgres {
     },
     /// List current active connections
     Connections(PgId),
+    /// Get CPU, memory, disk and connection history (memory and disk in bytes)
+    Metrics {
+        #[command(flatten)]
+        p: PgId,
+        #[command(flatten)]
+        r: Range,
+    },
     /// List current table and index sizes
     RelationSizes(PgId),
     /// List current slow queries
@@ -757,6 +825,40 @@ pub enum OAuth {
     },
     /// List OAuth client authorized users
     Users(ClientId),
+}
+
+// ---------------------------------------------------------------------------------------------
+// ssh-keys
+
+#[derive(Subcommand)]
+pub enum SshKeys {
+    /// List your SSH keys
+    List(Account),
+    /// Register an SSH public key
+    Create {
+        /// A name to identify the key
+        #[arg(long)]
+        name: String,
+        /// Public key in authorized_keys format
+        #[arg(long, value_name = "KEY", conflicts_with = "public_key_file", allow_hyphen_values = true)]
+        public_key: Option<String>,
+        /// File holding the public key, e.g. ~/.ssh/id_ed25519.pub
+        #[arg(long, value_name = "PATH")]
+        public_key_file: Option<String>,
+        /// Delete the key (and its service access) at this time, RFC 3339. 5 minutes to 30 days from now; omit for a permanent key
+        #[arg(long, value_name = "TIMESTAMP")]
+        expires_at: Option<String>,
+        #[command(flatten)]
+        a: Account,
+    },
+    /// Delete an SSH key (detach it from every service first)
+    Delete {
+        /// The ID of the SSH key
+        #[arg(long, value_name = "ID")]
+        key_id: String,
+        #[command(flatten)]
+        a: Account,
+    },
 }
 
 #[cfg(test)]

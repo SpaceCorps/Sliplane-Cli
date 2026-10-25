@@ -659,3 +659,332 @@ fn login_command_lifecycle() {
     assert_eq!(code, 0);
     assert_eq!(out["name"], "staging");
 }
+
+// ---------------------------------------------------------------------------------------------
+// API 0.10.0: scoped keys, SSH keys, service volumes, Postgres metrics, pricing
+
+/// `me` as a key with explicit scopes answers it - what `GET /me` returns since API 0.10.0.
+fn me_with_scopes(scopes: Value) -> Route {
+    (
+        "GET",
+        "me",
+        200,
+        json!({"authType": "apikey", "tokenType": "rw", "organizationId": "org_1", "scopes": scopes,
+               "user": {"email": "dev@example.com"}}),
+    )
+}
+
+fn merge_env_args() -> Vec<&'static str> {
+    vec!["services", "update", "--project-id", "p1", "--service-id", "s1", "--env", "A=9", "--merge-env", "-a", "work"]
+}
+
+#[test]
+fn merge_env_refuses_when_the_key_cannot_read_secrets() {
+    // Without secrets:read every value reads back empty, and a plain variable sent back empty is
+    // overwritten with nothing. The secret S would have been safe; B would not.
+    let blind = json!({"id": "s1", "deployment": repo_service()["deployment"].clone(),
+        "env": [{"key": "A", "value": "", "secret": false}, {"key": "B", "value": "", "secret": false},
+                {"key": "S", "value": "", "secret": true}]});
+    let mock = Mock::start(vec![
+        me_with_scopes(json!(["services:read", "services:write"])),
+        ("GET", SVC, 200, blind),
+        ("PATCH", SVC, 200, repo_service()),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&merge_env_args());
+    assert_eq!(code, 3, "{err}");
+    assert_eq!(err["code"], "auth_required");
+    let message = err["error"].as_str().unwrap();
+    assert!(message.contains("secrets:read") && message.contains("1 variable(s)") && message.contains(": B."), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("set-env"), "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "PATCH"), "nothing may be sent");
+}
+
+#[test]
+fn merge_env_without_the_secrets_scope_is_fine_when_only_secrets_are_carried() {
+    // Secrets go back empty to mean "keep the stored value", which needs no read access.
+    let only_secret = json!({"id": "s1", "deployment": repo_service()["deployment"].clone(),
+        "env": [{"key": "A", "value": "", "secret": false}, {"key": "S", "value": "", "secret": true}]});
+    let mock = Mock::start(vec![
+        me_with_scopes(json!(["services:read", "services:write"])),
+        ("GET", SVC, 200, only_secret),
+        ("PATCH", SVC, 200, repo_service()),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&merge_env_args());
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        mock.last("PATCH").body.unwrap()["env"],
+        json!([{"key": "S", "value": "", "secret": true}, {"key": "A", "value": "9", "secret": false}])
+    );
+}
+
+#[test]
+fn merge_env_proceeds_with_the_secrets_scope() {
+    let mock = Mock::start(vec![
+        me_with_scopes(json!(["services:read", "services:write", "secrets:read"])),
+        ("GET", SVC, 200, repo_service()),
+        ("PATCH", SVC, 200, repo_service()),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&merge_env_args());
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("PATCH").body.unwrap()["env"][0], json!({"key": "B", "value": "2", "secret": false}));
+}
+
+#[test]
+fn accounts_warn_when_the_key_has_no_secrets_scope() {
+    let mock = Mock::start(vec![me_with_scopes(json!(["services:read"]))]);
+    let env = Env::new(&mock);
+    let (code, out, err) = env.json(&["accounts", "add", "work", "--api-key", "sl_test"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out["warning"].as_str().unwrap().contains("secrets:read"), "{out}");
+    let (_, out, _) = env.json(&["accounts", "test", "work"]);
+    assert!(out["warning"].as_str().unwrap().contains("secrets:read"), "{out}");
+    assert_eq!(out["me"]["scopes"], json!(["services:read"]));
+
+    // A key that reports no scopes at all (legacy) and one that has the scope: no warning.
+    let mock = Mock::start(vec![me()]);
+    let (_, out, _) = Env::new(&mock).json(&["accounts", "add", "work", "--api-key", "sl_test"]);
+    assert!(out.get("warning").is_none(), "{out}");
+    let mock = Mock::start(vec![me_with_scopes(json!(["secrets:read"]))]);
+    let (_, out, _) = Env::new(&mock).json(&["accounts", "add", "work", "--api-key", "sl_test"]);
+    assert!(out.get("warning").is_none(), "{out}");
+}
+
+#[test]
+fn ssh_key_commands() {
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "ssh-keys", 200, json!([{"id": "sshkey_1"}])),
+        ("POST", "ssh-keys", 201, json!({"id": "sshkey_1", "fingerprint": "SHA256:x"})),
+        ("DELETE", "ssh-keys/sshkey_1", 204, json!(null)),
+        ("GET", "projects/p1/services/s1/ssh-keys", 200, json!([{"keyId": "sshkey_1"}])),
+        ("PUT", "projects/p1/services/s1/ssh-keys/sshkey_1", 200, json!({"host": "h", "port": 2222, "username": "u"})),
+        ("DELETE", "projects/p1/services/s1/ssh-keys/sshkey_1", 204, json!(null)),
+    ]);
+    let env = Env::new(&mock).with_account();
+
+    let (code, out, _) = env.json(&["ssh-keys", "list", "-a", "work"]);
+    assert_eq!((code, out), (0, json!([{"id": "sshkey_1"}])));
+
+    let (code, _, err) = env.json(&[
+        "ssh-keys",
+        "create",
+        "--name",
+        "laptop",
+        "--public-key",
+        "ssh-ed25519 AAAAC3 me@laptop\n",
+        "--expires-at",
+        "2026-12-01T00:00:00Z",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        mock.last("POST").body.unwrap(),
+        json!({"name": "laptop", "publicKey": "ssh-ed25519 AAAAC3 me@laptop", "expiresAt": "2026-12-01T00:00:00Z"})
+    );
+
+    // From a file, trimmed; no expiry key unless asked for.
+    let file = env.dir.join("id.pub");
+    std::fs::write(&file, "ssh-ed25519 BBBB me@desk\r\n").unwrap();
+    let (code, _, err) =
+        env.json(&["ssh-keys", "create", "--name", "desk", "--public-key-file", file.to_str().unwrap(), "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("POST").body.unwrap(), json!({"name": "desk", "publicKey": "ssh-ed25519 BBBB me@desk"}));
+
+    let (code, out, _) = env.json(&["ssh-keys", "delete", "--key-id", "sshkey_1", "-a", "work"]);
+    assert_eq!((code, out), (0, json!({"status": "deleted", "keyId": "sshkey_1"})));
+
+    let svc = ["--project-id", "p1", "--service-id", "s1", "-a", "work"];
+    let (code, out, _) = env.json(&[&["services", "ssh-keys"][..], &svc].concat());
+    assert_eq!((code, out), (0, json!([{"keyId": "sshkey_1"}])));
+
+    let (code, out, err) = env.json(&[&["services", "attach-ssh-key", "--key-id", "sshkey_1"][..], &svc].concat());
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, json!({"host": "h", "port": 2222, "username": "u"}));
+    // Attaching sends no body at all, as the spec declares none.
+    assert_eq!(mock.last("PUT").body, None);
+
+    let (code, out, _) = env.json(&[&["services", "detach-ssh-key", "--key-id", "sshkey_1"][..], &svc].concat());
+    assert_eq!(
+        (code, out),
+        (0, json!({"status": "detached", "projectId": "p1", "serviceId": "s1", "keyId": "sshkey_1"}))
+    );
+}
+
+#[test]
+fn ssh_key_create_refuses_a_private_key_and_a_missing_key() {
+    let mock = Mock::start(vec![me(), ("POST", "ssh-keys", 201, json!({}))]);
+    let env = Env::new(&mock).with_account();
+
+    let (code, _, err) = env.json(&[
+        "ssh-keys",
+        "create",
+        "--name",
+        "oops",
+        "--public-key",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nabc",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("private key"), "{err}");
+
+    let (code, _, err) = env.json(&["ssh-keys", "create", "--name", "none", "-a", "work"]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("--public-key"), "{err}");
+
+    let args = ["ssh-keys", "create", "--name", "x", "--public-key-file", "/no/such/file", "-a", "work"];
+    assert_eq!(env.json(&args).0, 6);
+    assert!(mock.requests().iter().all(|r| r.method != "POST"), "nothing may be sent");
+}
+
+#[test]
+fn ssh_key_in_use_says_how_to_detach() {
+    let mock = Mock::start(vec![
+        me(),
+        ("DELETE", "ssh-keys/sshkey_1", 409, json!({"code": "ssh_key_in_use", "message": "attached"})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["ssh-keys", "delete", "--key-id", "sshkey_1", "-a", "work"]);
+    assert_eq!(code, 1);
+    assert!(err["detail"].as_str().unwrap().contains("detach-ssh-key"), "{err}");
+}
+
+#[test]
+fn service_volume_commands() {
+    let volume = json!({"id": "volume_data", "name": "data", "mountPath": "/data"});
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", SVC, 200, json!({"id": "s1", "serverId": "srv1"})),
+        (
+            "GET",
+            "servers/srv1/volumes",
+            200,
+            json!([{"id": "volume_data", "name": "data"}, {"id": "volume_other", "name": "other"}]),
+        ),
+        ("POST", "projects/p1/services/s1/volumes", 201, volume),
+        (
+            "PATCH",
+            "projects/p1/services/s1/volumes/volume_data",
+            200,
+            json!({"id": "volume_data", "mountPath": "/mnt"}),
+        ),
+        ("DELETE", "projects/p1/services/s1/volumes/volume_data", 204, json!(null)),
+        ("PATCH", "servers/srv1/volumes/volume_data", 200, json!({"id": "volume_data", "name": "renamed"})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let svc = ["--project-id", "p1", "--service-id", "s1", "-a", "work"];
+    let run = |head: &[&str]| env.json(&[head, &svc].concat());
+
+    // A name that matches an existing volume on the service's server mounts that one...
+    let (code, _, err) = run(&["services", "attach-volume", "--volume", "data:/data"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("POST").body.unwrap(), json!({"id": "volume_data", "mountPath": "/data"}));
+
+    // ...an unknown name creates one, and an id is used as given.
+    run(&["services", "attach-volume", "--volume", "fresh:/fresh"]);
+    assert_eq!(mock.last("POST").body.unwrap(), json!({"name": "fresh", "mountPath": "/fresh"}));
+    run(&["services", "attach-volume", "--volume", "volume_other:/other"]);
+    assert_eq!(mock.last("POST").body.unwrap(), json!({"id": "volume_other", "mountPath": "/other"}));
+
+    let (code, _, err) = run(&["services", "attach-volume", "--volume", "data"]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("id:/path or name:/path"), "{err}");
+
+    let (code, _, err) = run(&["services", "update-volume", "--volume-id", "volume_data", "--mount-path", "/mnt"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("PATCH").body.unwrap(), json!({"mountPath": "/mnt"}));
+
+    // Git Bash on Windows turns "/mnt" into a drive path before the CLI sees it.
+    let rewritten =
+        ["services", "update-volume", "--volume-id", "volume_data", "--mount-path", "C:/Program Files/Git/mnt"];
+    let (code, _, err) = run(&rewritten);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("Windows path"), "{err}");
+    let relative = ["services", "update-volume", "--volume-id", "volume_data", "--mount-path", "mnt"];
+    assert_eq!(run(&relative).0, 6);
+
+    let (code, out, _) = run(&["services", "detach-volume", "--volume-id", "volume_data"]);
+    assert_eq!(
+        (code, out),
+        (0, json!({"status": "detached", "projectId": "p1", "serviceId": "s1", "volumeId": "volume_data"}))
+    );
+
+    let (code, _, err) = env.json(&[
+        "servers",
+        "rename-volume",
+        "--server-id",
+        "srv1",
+        "--volume-id",
+        "volume_data",
+        "--name",
+        "renamed",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("PATCH").body.unwrap(), json!({"name": "renamed"}));
+}
+
+#[test]
+fn metrics_take_a_range_or_a_window_never_both() {
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "servers/srv1/metrics?from=100&to=200", 200, json!([{"cpuUsage": 1}])),
+        ("GET", "projects/p1/services/s1/metrics?range=7d", 200, json!([])),
+        ("GET", "projects/p1/services/s1/metrics?range=1h", 200, json!([])),
+        ("GET", "postgres/pg1/metrics?range=24h", 200, json!([{"activeConnections": 3}])),
+        ("GET", "postgres/pg1/metrics?from=100&to=200", 200, json!([])),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let ok = |args: &[&str]| {
+        let (code, out, err) = env.json(args);
+        assert_eq!(code, 0, "{err}");
+        out
+    };
+
+    // The API answers 400 to `range` together with from/to, so the 1h default must not ride along.
+    ok(&["servers", "metrics", "--server-id", "srv1", "--from", "100", "--to", "200", "-a", "work"]);
+    ok(&["services", "metrics", "--project-id", "p1", "--service-id", "s1", "--range", "7d", "-a", "work"]);
+    ok(&["services", "metrics", "--project-id", "p1", "--service-id", "s1", "-a", "work"]);
+    assert_eq!(
+        ok(&["postgres", "metrics", "--postgres-id", "pg1", "--range", "24h", "-a", "work"]),
+        json!([{"activeConnections": 3}])
+    );
+    ok(&["postgres", "metrics", "--postgres-id", "pg1", "--from", "100", "--to", "200", "-a", "work"]);
+
+    // Contradictory or half-given windows are refused before any request.
+    let before = mock.requests().len();
+    let both =
+        ["postgres", "metrics", "--postgres-id", "pg1", "--range", "1h", "--from", "1", "--to", "2", "-a", "work"];
+    let from_only = ["postgres", "metrics", "--postgres-id", "pg1", "--from", "1", "-a", "work"];
+    let to_only = ["servers", "metrics", "--server-id", "srv1", "--to", "2", "-a", "work"];
+    for args in [both.as_slice(), from_only.as_slice(), to_only.as_slice()] {
+        assert_eq!(env.json(args).0, 6, "{args:?}");
+    }
+    assert_eq!(mock.requests().len(), before);
+}
+
+#[test]
+fn pricing_is_a_plain_get() {
+    let mock = Mock::start(vec![me(), ("GET", "pricing", 200, json!({"currency": "EUR"}))]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["pricing", "-a", "work"]);
+    assert_eq!((code, out), (0, json!({"currency": "EUR"})), "{err}");
+}
+
+#[test]
+fn maintenance_mode_has_its_own_message() {
+    let mock = Mock::start(vec![
+        me(),
+        ("POST", "projects", 423, json!({"code": "organization_maintenance", "message": "locked"})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["projects", "create", "--name", "x", "-a", "work"]);
+    assert_eq!(code, 1);
+    assert!(err["error"].as_str().unwrap().contains("maintenance"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("maintenance"), "{err}");
+}

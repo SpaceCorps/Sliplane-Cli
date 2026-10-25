@@ -29,6 +29,8 @@ pub fn run(command: Command) -> Result<()> {
         Command::Buckets(c) => buckets(c),
         Command::Credentials(c) => credentials(c),
         Command::Oauth(c) => oauth(c),
+        Command::SshKeys(c) => ssh_keys(c),
+        Command::Pricing(a) => print(client(&a)?.get("pricing")?),
     }
 }
 
@@ -78,12 +80,13 @@ fn projects(c: Projects) -> Result<()> {
     }
 }
 
-fn metrics_query(r: &Range) -> String {
-    query(&[
-        ("range", Some(r.range.clone()).filter(|s| !s.is_empty())),
-        ("from", r.from.map(|v| v.to_string())),
-        ("to", r.to.map(|v| v.to_string())),
-    ])
+/// The API refuses `range` together with `from`/`to` ("Cannot specify both range and from/to
+/// timestamps"), so the 1h default applies only when no explicit window was given.
+pub(crate) fn metrics_query(r: &Range) -> String {
+    if r.from.is_some() || r.to.is_some() {
+        return query(&[("from", r.from.map(|v| v.to_string())), ("to", r.to.map(|v| v.to_string()))]);
+    }
+    query(&[("range", Some(r.range.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "1h".into())))])
 }
 
 fn servers(c: Servers) -> Result<()> {
@@ -123,6 +126,12 @@ fn servers(c: Servers) -> Result<()> {
         Servers::Volumes(s) => print(client(&s.a)?.get(&format!("servers/{}/volumes", seg(&s.server_id)))?),
         Servers::CreateVolume { name, s } => {
             print(client(&s.a)?.post(&format!("servers/{}/volumes", seg(&s.server_id)), &json!({ "name": name }))?)
+        }
+        Servers::RenameVolume { volume_id, name, s } => {
+            print(client(&s.a)?.patch(
+                &format!("servers/{}/volumes/{}", seg(&s.server_id), seg(&volume_id)),
+                &json!({ "name": name }),
+            )?)
         }
     }
 }
@@ -227,6 +236,7 @@ fn postgres(c: Postgres) -> Result<()> {
             print(client(&p.a)?.get(&at(&p, &format!("/logs{q}")))?)
         }
         Postgres::Connections(p) => print(client(&p.a)?.get(&at(&p, "/active-connections"))?),
+        Postgres::Metrics { p, r } => print(client(&p.a)?.get(&at(&p, &format!("/metrics{}", metrics_query(&r))))?),
         Postgres::RelationSizes(p) => print(client(&p.a)?.get(&at(&p, "/relation-sizes"))?),
         Postgres::SlowQueries(p) => print(client(&p.a)?.get(&at(&p, "/slow-queries"))?),
         Postgres::TopQueries(p) => print(client(&p.a)?.get(&at(&p, "/top-queries"))?),
@@ -234,6 +244,39 @@ fn postgres(c: Postgres) -> Result<()> {
         Postgres::Restore { p, timestamp } => {
             let r = client(&p.a)?.post(&at(&p, "/restore"), &json!({ "timestamp": timestamp }))?;
             done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "restore", "timestamp" => timestamp })
+        }
+    }
+}
+
+fn ssh_keys(c: SshKeys) -> Result<()> {
+    match c {
+        SshKeys::List(a) => print(client(&a)?.get("ssh-keys")?),
+        SshKeys::Create { name, public_key, public_key_file, expires_at, a } => {
+            let key = match (public_key, public_key_file) {
+                (Some(k), _) => k,
+                (None, Some(path)) => {
+                    std::fs::read_to_string(&path).map_err(|e| Error::invalid(format!("Could not read {path}: {e}")))?
+                }
+                (None, None) => return Err(Error::invalid("Pass --public-key <key> or --public-key-file <path>.")),
+            };
+            let key = key.trim();
+            if key.is_empty() {
+                return Err(Error::invalid("The public key is empty."));
+            }
+            if key.contains("PRIVATE KEY") {
+                return Err(Error::invalid(
+                    "That is a private key. Pass the public half (the .pub file), and keep the private key to yourself.",
+                ));
+            }
+            let mut body = obj! { "name" => name, "publicKey" => key };
+            if let Some(t) = expires_at.filter(|s| !s.is_empty()) {
+                body["expiresAt"] = json!(t);
+            }
+            print(client(&a)?.post("ssh-keys", &body)?)
+        }
+        SshKeys::Delete { key_id, a } => {
+            let r = client(&a)?.delete(&format!("ssh-keys/{}", seg(&key_id)))?;
+            done(r, "deleted", obj! { "keyId" => key_id })
         }
     }
 }
