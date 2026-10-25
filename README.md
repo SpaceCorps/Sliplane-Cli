@@ -33,10 +33,10 @@ Download standalone binary archives directly from the [GitHub Releases](https://
 
 | Platform | Architecture | Binary Package |
 |:---|:---|:---|
-| **macOS** | Apple Silicon (`aarch64`) | [`sliplane-v1.0.0-aarch64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.0.0/sliplane-v1.0.0-aarch64-apple-darwin.tar.gz) |
-| **macOS** | Intel (`x86_64`) | [`sliplane-v1.0.0-x86_64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.0.0/sliplane-v1.0.0-x86_64-apple-darwin.tar.gz) |
-| **Linux** | x86_64 (musl static) | [`sliplane-v1.0.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.0.0/sliplane-v1.0.0-x86_64-unknown-linux-musl.tar.gz) |
-| **Windows**| x64 (MSVC) | [`sliplane-v1.0.0-x86_64-pc-windows-msvc.zip`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.0.0/sliplane-v1.0.0-x86_64-pc-windows-msvc.zip) |
+| **macOS** | Apple Silicon (`aarch64`) | [`sliplane-v1.1.0-aarch64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-aarch64-apple-darwin.tar.gz) |
+| **macOS** | Intel (`x86_64`) | [`sliplane-v1.1.0-x86_64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-x86_64-apple-darwin.tar.gz) |
+| **Linux** | x86_64 (musl static) | [`sliplane-v1.1.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-x86_64-unknown-linux-musl.tar.gz) |
+| **Windows**| x64 (MSVC) | [`sliplane-v1.1.0-x86_64-pc-windows-msvc.zip`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-x86_64-pc-windows-msvc.zip) |
 
 ---
 
