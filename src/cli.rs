@@ -527,6 +527,8 @@ pub enum Services {
         #[arg(long, value_name = "ID")]
         key_id: String,
     },
+    /// Rotate the deploy hook URL (needs secrets:read); the old URL stops working immediately
+    RotateDeployHook(ServiceRef),
 }
 
 // ---------------------------------------------------------------------------------------------

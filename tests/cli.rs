@@ -988,3 +988,44 @@ fn maintenance_mode_has_its_own_message() {
     assert!(err["error"].as_str().unwrap().contains("maintenance"), "{err}");
     assert!(err["remediation"].as_str().unwrap().contains("maintenance"), "{err}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// API 0.11.0: deploy hook rotation
+
+const ROTATE: &str = "projects/p1/services/s1/deploy-hook/rotate";
+
+#[test]
+fn rotate_deploy_hook_sends_no_body_and_warns_that_the_old_url_is_dead() {
+    let mock = Mock::start(vec![
+        me(),
+        ("POST", ROTATE, 200, json!({"deployHookUrl": "https://api.sliplane.io/deploy/s1/dhs_new"})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) =
+        env.json(&["services", "rotate-deploy-hook", "--project-id", "p1", "--service-id", "s1", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["deployHookUrl"], "https://api.sliplane.io/deploy/s1/dhs_new");
+    assert!(out["note"].as_str().unwrap().contains("stopped working immediately"), "{out}");
+    assert_eq!(mock.last("POST").body, None, "the spec declares no request body");
+}
+
+#[test]
+fn a_missing_scope_is_not_reported_as_a_generic_403() {
+    let mock = Mock::start(vec![
+        me(),
+        (
+            "POST",
+            ROTATE,
+            403,
+            json!({"code": "insufficient_scope", "message": "This token is missing a required scope"}),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) =
+        env.json(&["services", "rotate-deploy-hook", "--project-id", "p1", "--service-id", "s1", "-a", "work"]);
+    assert_eq!(code, 3);
+    assert_eq!(err["code"], "auth_required");
+    assert!(err["error"].as_str().unwrap().contains("missing a permission"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("sliplane me"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("insufficient_scope"), "{err}");
+}

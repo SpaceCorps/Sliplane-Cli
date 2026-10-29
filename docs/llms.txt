@@ -1,6 +1,6 @@
 # Sliplane CLI
 
-> A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.10.0). Built in Rust for developers and autonomous AI agents.
+> A blazing fast native command-line tool and agent interface for the Sliplane cloud hosting platform API (v0, OpenAPI spec 0.11.0). Built in Rust for developers and autonomous AI agents.
 
 ## When to Use This CLI
 
@@ -44,6 +44,7 @@ Do NOT use this tool if:
 - `sliplane services logs --project-id <p> --service-id <s> -a <account>`: View container logs.
 - `sliplane services attach-volume|update-volume|detach-volume --project-id <p> --service-id <s> ...`: Mount, move or unmount a volume (each redeploys the service; detached data is kept).
 - `sliplane services ssh-keys|attach-ssh-key|detach-ssh-key --project-id <p> --service-id <s> ...`: Manage SSH access to a service.
+- `sliplane services rotate-deploy-hook --project-id <p> --service-id <s> -a <account> --json`: New deploy hook URL; the old one stops working immediately.
 
 ### Managed PostgreSQL & Storage
 - `sliplane postgres list -a <account> --json`: List managed Postgres instances.

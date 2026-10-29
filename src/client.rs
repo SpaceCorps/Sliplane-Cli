@@ -192,6 +192,12 @@ pub fn status_error(status: u16, body: &str) -> Error {
             Error::new(ErrorCode::AuthRequired, "This feature or region is not enabled for the organization.")
                 .fix("Ask Sliplane support (support@sliplane.io) to enable it.")
         }
+        403 if api_code == "insufficient_scope" => {
+            Error::new(ErrorCode::AuthRequired, "The API key is missing a permission this call needs.").fix(
+                "`sliplane me` lists the key's scopes. Create a key with the missing permission at \
+                 https://sliplane.io/app/team/api, then: sliplane accounts add <name> --api-key <key> --force",
+            )
+        }
         403 => Error::new(ErrorCode::AuthRequired, "The API key is not allowed to do that.").fix(
             "Check the key's permissions for this area (`sliplane me` lists its scopes) and that it belongs to the \
              right organization. A legacy token also needs one: \
@@ -285,6 +291,9 @@ mod tests {
         assert_eq!(status_error(423, r#"{"code":"organization_maintenance","message":"x"}"#).code, ErrorCode::Error);
         assert!(status_error(409, r#"{"code":"ssh_key_in_use"}"#).detail.unwrap().contains("detach-ssh-key"));
         assert!(status_error(409, "deployment type").detail.unwrap().contains("recreate"));
+        let scope = status_error(403, r#"{"code":"insufficient_scope","message":"missing"}"#);
+        assert_eq!(scope.code, ErrorCode::AuthRequired);
+        assert!(scope.message.contains("missing a permission"));
         let ro = status_error(403, r#"{"code":"read_only_token","message":"read only"}"#);
         assert_eq!(ro.code, ErrorCode::AuthRequired);
         assert!(ro.message.contains("read-only"));

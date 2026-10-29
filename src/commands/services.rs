@@ -96,6 +96,20 @@ pub fn run(c: Services) -> Result<()> {
         Services::AttachSshKey { s, key_id } => {
             print(client(&s.a)?.put_empty(&path(&s, &format!("/ssh-keys/{}", seg(&key_id))))?)
         }
+        Services::RotateDeployHook(s) => {
+            let mut r = client(&s.a)?.post_empty(&path(&s, "/deploy-hook/rotate"))?;
+            // The old URL is dead the moment this returns; anything still calling it fails silently.
+            if let Value::Object(o) = &mut r {
+                o.insert(
+                    "note".into(),
+                    json!(
+                        "The previous deploy hook URL stopped working immediately. \
+                         Update it in every integration that calls it (CI secrets, webhooks)."
+                    ),
+                );
+            }
+            print(r)
+        }
         Services::DetachSshKey { s, key_id } => {
             let r = client(&s.a)?.delete(&path(&s, &format!("/ssh-keys/{}", seg(&key_id))))?;
             done(r, "detached", with(ids(&s), "keyId", &key_id))

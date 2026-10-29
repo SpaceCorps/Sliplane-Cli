@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-online-success)](https://spacecorps.github.io/Sliplane-Cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A blazing fast, native command-line tool and agent interface for the [Sliplane](https://sliplane.io) cloud hosting platform API (v0, OpenAPI spec 0.10.0). Built in Rust for developers and autonomous AI workflows.
+A blazing fast, native command-line tool and agent interface for the [Sliplane](https://sliplane.io) cloud hosting platform API (v0, OpenAPI spec 0.11.0). Built in Rust for developers and autonomous AI workflows.
 
 ---
 
@@ -33,10 +33,10 @@ Download standalone binary archives directly from the [GitHub Releases](https://
 
 | Platform | Architecture | Binary Package |
 |:---|:---|:---|
-| **macOS** | Apple Silicon (`aarch64`) | [`sliplane-v1.1.0-aarch64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-aarch64-apple-darwin.tar.gz) |
-| **macOS** | Intel (`x86_64`) | [`sliplane-v1.1.0-x86_64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-x86_64-apple-darwin.tar.gz) |
-| **Linux** | x86_64 (musl static) | [`sliplane-v1.1.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-x86_64-unknown-linux-musl.tar.gz) |
-| **Windows**| x64 (MSVC) | [`sliplane-v1.1.0-x86_64-pc-windows-msvc.zip`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.1.0/sliplane-v1.1.0-x86_64-pc-windows-msvc.zip) |
+| **macOS** | Apple Silicon (`aarch64`) | [`sliplane-v1.2.0-aarch64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-aarch64-apple-darwin.tar.gz) |
+| **macOS** | Intel (`x86_64`) | [`sliplane-v1.2.0-x86_64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-apple-darwin.tar.gz) |
+| **Linux** | x86_64 (musl static) | [`sliplane-v1.2.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-unknown-linux-musl.tar.gz) |
+| **Windows**| x64 (MSVC) | [`sliplane-v1.2.0-x86_64-pc-windows-msvc.zip`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-pc-windows-msvc.zip) |
 
 ---
 
@@ -128,6 +128,7 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 | `sliplane services set-env --project-id <p> --service-id <s> --key <k> --value <v>` | Safely set or update a single environment variable |
 | `sliplane services delete-env --project-id <p> --service-id <s> --key <k>` | Remove a single environment variable |
 | `sliplane services add-domain / remove-domain` | Configure custom domain routing |
+| `sliplane services rotate-deploy-hook --project-id <p> --service-id <s>` | New deploy hook URL; the old one stops working immediately (needs `secrets:read`) |
 | `sliplane services attach-volume --project-id <p> --service-id <s> --volume <id-or-name>:/path` | Mount a volume and redeploy |
 | `sliplane services update-volume --project-id <p> --service-id <s> --volume-id <v> --mount-path /path` | Change a mount path and redeploy |
 | `sliplane services detach-volume --project-id <p> --service-id <s> --volume-id <v>` | Unmount a volume and redeploy (the data is kept) |
