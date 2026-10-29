@@ -26,7 +26,7 @@ pub fn print() {
 }
 
 /// The Sliplane API spec (`https://ctrl.sliplane.io/spec.json`) this build was checked against.
-pub const API_VERSION: &str = "0.10.0";
+pub const API_VERSION: &str = "0.11.0";
 
 const RULES: &[&str] = &[
     "Always pass --account. There is no default account and no environment variable.",
@@ -42,7 +42,7 @@ const RULES: &[&str] = &[
 
 const README: &str = r#"# sliplane - agent operating manual
 
-A CLI over the Sliplane API (v0, spec 0.10.0): servers, services, Postgres databases, buckets,
+A CLI over the Sliplane API (v0, spec 0.11.0): servers, services, Postgres databases, buckets,
 registry credentials, SSH keys and OAuth clients. Results are YAML on stdout, errors are YAML on stderr,
 and `--json` switches both to JSON. Prompts and warnings go to stderr, so stdout is always safe
 to parse - including for deletes and other actions that return no body, which print a small
@@ -130,6 +130,7 @@ than constructing them. There is no API to get a single project or bucket by id 
     sliplane ssh-keys create --name <name> (--public-key <key> | --public-key-file <path>) [--expires-at <rfc3339>]
     sliplane ssh-keys delete --key-id <id>
     sliplane services attach-ssh-key|detach-ssh-key --project-id <id> --service-id <id> --key-id <id>
+    sliplane services rotate-deploy-hook --project-id <id> --service-id <id>
     sliplane services ssh-keys --project-id <id> --service-id <id>
 
 Six behaviours that will otherwise cost you data:
@@ -164,6 +165,11 @@ Six behaviours that will otherwise cost you data:
    username to connect with. A key that is still attached to a service cannot be deleted
    (`409 ssh_key_in_use`); detach it first. `--expires-at` makes a key delete itself, and its
    access, between 5 minutes and 30 days from now.
+
+Rotating a deploy hook (`services rotate-deploy-hook`, needs `secrets:read`) kills the old URL
+at once: update every CI secret or webhook that calls it. The current URL is in `services get`
+(`deployHookUrl`, empty without `secrets:read`). Server autoscaling (API 0.11.0) shows up in
+`servers get` but this CLI cannot change it - use the dashboard.
 
 Deletes (`services delete`, `projects delete`, `servers delete`, `postgres delete`,
 `buckets delete`) are irreversible and ask nothing. Read the resource back first and confirm
