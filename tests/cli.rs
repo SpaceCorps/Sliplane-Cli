@@ -560,7 +560,7 @@ fn create_requires_a_deployment_and_resolves_volume_names() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(out["id"], "s9");
     let body = mock.last("POST").body.unwrap();
-    assert_eq!(body["deployment"], json!({"url": "nginx:latest"}));
+    assert_eq!(body["deployment"], json!({"url": "docker.io/library/nginx:latest"}));
     assert_eq!(body["network"], json!({"public": true, "protocol": "http"}));
     assert_eq!(
         body["volumes"],
@@ -2368,4 +2368,634 @@ fn the_probe_goes_direct_while_other_requests_use_the_proxy() {
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!((count(&mock, "postgres/pg_1"), count(&mock, "me")), (gets + 1, probes + 1), "both requests happened");
     assert_eq!(hits.load(Ordering::SeqCst), 2, "the read went through the proxy; the address probe did not");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --env-file and --secret-env-file
+
+/// Writes a file into the test's own directory and returns its path.
+fn file_in(env: &Env, name: &str, text: &str) -> String {
+    let path = env.dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+const CREATE: [&str; 11] =
+    ["services", "create", "--project-id", "p1", "--name", "web", "--server-id", "srv1", "--image", "nginx", "-a"];
+
+fn create_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = CREATE.to_vec();
+    args.push("work");
+    args.extend(extra);
+    args
+}
+
+#[test]
+fn create_reads_plain_and_secret_variables_from_files_and_the_flag_wins() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let plain = file_in(&env, "plain.env", "# app\nPORT=8080\nexport MODE=\"a b\"\nA=from-file\n");
+    let secret = file_in(&env, "secret.env", "DB_PASSWORD='p#ss $word'\n");
+    let out = env.run(&create_args(&[
+        "--env-file",
+        &plain,
+        "--secret-env-file",
+        &secret,
+        "--env",
+        "A=from-flag",
+        "--secret-env",
+        "S=2",
+        "--json",
+    ]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(
+        body["env"],
+        json!([
+            {"key": "PORT", "value": "8080", "secret": false},
+            {"key": "MODE", "value": "a b", "secret": false},
+            {"key": "DB_PASSWORD", "value": "p#ss $word", "secret": true},
+            {"key": "A", "value": "from-flag", "secret": false},
+            {"key": "S", "value": "2", "secret": true},
+        ])
+    );
+    // The override is named, with where it came from, and no value is printed.
+    assert!(
+        stderr.contains(&format!("note: A at {plain}:4 is replaced by the A given on the command line")),
+        "{stderr}"
+    );
+    for value in ["from-file", "from-flag", "p#ss"] {
+        assert!(!stderr.contains(value), "a value reached stderr: {stderr}");
+    }
+}
+
+#[test]
+fn later_files_replace_earlier_ones_and_say_so() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let first = file_in(&env, "first.env", "A=1\nB=1\n");
+    let second = file_in(&env, "second.env", "B=2\nB=3\n");
+    let out = env.run(&create_args(&["--env-file", &first, "--env-file", &second, "--json"]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        mock.last("POST").body.unwrap()["env"],
+        json!([{"key": "A", "value": "1", "secret": false}, {"key": "B", "value": "3", "secret": false}])
+    );
+    assert!(stderr.contains(&format!("note: B at {second}:1 replaces B at {first}:2")), "{stderr}");
+    assert!(stderr.contains(&format!("note: B at {second}:2 replaces B at {second}:1")), "{stderr}");
+}
+
+#[test]
+fn a_bad_env_file_names_the_line_and_never_the_value_and_creates_nothing() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+
+    // A bare KEY means "empty value" for --env; in a file it is refused, not silently reinterpreted.
+    let bare = file_in(&env, "bare.env", "A=1\nSUPERSECRETTOKEN\n");
+    let (code, _, err) = env.json(&create_args(&["--env-file", &bare]));
+    assert_eq!(code, 6);
+    let message = err["error"].as_str().unwrap();
+    assert!(message.contains("bare.env, line 2"), "{err}");
+    assert!(!message.contains("SUPERSECRETTOKEN"), "the line was echoed: {err}");
+
+    let open = file_in(&env, "open.env", "A=1\nB=\"hunter2 never closed\nC=3\n");
+    let (code, _, err) = env.json(&create_args(&["--secret-env-file", &open]));
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("open.env, line 2"), "{err}");
+    assert!(!err.to_string().contains("hunter2"), "{err}");
+
+    let missing = env.dir.join("nope.env").to_string_lossy().into_owned();
+    let (code, _, err) = env.json(&create_args(&["--env-file", &missing]));
+    assert_eq!(code, 6, "{err}");
+
+    let empty = file_in(&env, "empty.env", "# nothing here\n");
+    let (code, _, err) = env.json(&create_args(&["--env-file", &empty]));
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("defines no variables"), "{err}");
+
+    // Every one of those failed before the account was asked anything but `me`.
+    assert_eq!(paths(&mock, "POST"), Vec::<String>::new());
+    assert_eq!(paths(&mock, "GET"), ["me"], "files are read before any lookup");
+}
+
+#[test]
+fn update_applies_the_env_protections_to_file_variables_too() {
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, repo_service()), ("PATCH", SVC, 200, repo_service())]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "new.env", "A=9\n");
+    let base = ["services", "update", "--project-id", "p1", "--service-id", "s1", "--env-file", &file, "-a", "work"];
+
+    // Without a flag saying what to do with B and S, the update is refused and names them.
+    let (code, _, err) = env.json(&base);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("2 environment variable(s) not listed: B, S"), "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "PATCH"));
+
+    // --merge-env keeps them, secrets sent back empty so the API keeps the stored value.
+    let mut args = base.to_vec();
+    args.push("--merge-env");
+    let (code, _, err) = env.json(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        mock.last("PATCH").body.unwrap()["env"],
+        json!([{"key": "B", "value": "2", "secret": false},
+               {"key": "S", "value": "", "secret": true},
+               {"key": "A", "value": "9", "secret": false}])
+    );
+
+    // --replace-env sends exactly the file.
+    let mut args = base.to_vec();
+    args.push("--replace-env");
+    let (code, _, err) = env.json(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("PATCH").body.unwrap()["env"], json!([{"key": "A", "value": "9", "secret": false}]));
+}
+
+#[test]
+fn update_merge_with_a_key_that_cannot_read_secrets_still_refuses_for_file_variables() {
+    let mock = Mock::start(vec![
+        me_with_scopes(json!(["services:write"])),
+        ("GET", SVC, 200, repo_service()),
+        ("PATCH", SVC, 200, repo_service()),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "new.env", "A=9\n");
+    let (code, _, err) = env.json(&[
+        "services",
+        "update",
+        "--project-id",
+        "p1",
+        "--service-id",
+        "s1",
+        "--secret-env-file",
+        &file,
+        "--merge-env",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 3, "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "PATCH"));
+}
+
+#[test]
+fn update_with_an_env_file_and_no_variables_in_it_is_not_a_silent_no_op() {
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, repo_service()), ("PATCH", SVC, 200, repo_service())]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "empty.env", "\n");
+    let (code, _, err) = env.json(&[
+        "services",
+        "update",
+        "--project-id",
+        "p1",
+        "--service-id",
+        "s1",
+        "--env-file",
+        &file,
+        "--merge-env",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("defines no variables"), "{err}");
+}
+
+#[test]
+fn presets_deploy_takes_env_files_as_overrides() {
+    let mock = Mock::start(vec![me(), catalog(), ("POST", "projects/p1/services", 201, json!({"id": "svc1"}))]);
+    let env = Env::new(&mock).with_account();
+    let secrets = file_in(&env, "keys.env", "OPENAI_API_KEY=sk-from-file\n");
+    let (code, _, err) = env.json(&[
+        "presets",
+        "deploy",
+        "n8n",
+        "--project-id",
+        "p1",
+        "--server-id",
+        "srv1",
+        "--secret-env-file",
+        &secrets,
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(body["env"], json!([{"key": "OPENAI_API_KEY", "value": "sk-from-file", "secret": true}]));
+}
+
+// ---------------------------------------------------------------------------------------------
+// credentials create: the token on stdin
+
+impl Env {
+    /// Runs the binary with `stdin` piped to it (or closed, when None), capturing both streams.
+    fn run_with_stdin(&self, args: &[&str], stdin: Option<&[u8]>) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sliplane"))
+            .args(args)
+            .env("SLIPLANE_CONFIG_DIR", &self.dir)
+            .env("SLIPLANE_SECRET_STORE", "plaintext")
+            .env("SLIPLANE_API_URL", &self.api)
+            .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(bytes) = stdin {
+            // The child may stop reading early (an oversized token): a broken pipe is fine.
+            let _ = child.stdin.take().unwrap().write_all(bytes);
+        }
+        child.wait_with_output().unwrap()
+    }
+}
+
+const CRED_BASE: [&str; 9] =
+    ["credentials", "create", "--name", "gh", "--type", "ghcr", "--username", "octo", "--json"];
+
+fn credential_routes() -> Vec<Route> {
+    vec![
+        me(),
+        (
+            "POST",
+            "registry-credentials",
+            201,
+            json!({"id": "credential_1", "name": "gh", "type": "ghcr", "username": "octo", "createdAt": "2026-10-31T12:00:00Z"}),
+        ),
+    ]
+}
+
+#[test]
+fn credentials_token_comes_from_stdin_and_never_touches_argv() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+
+    // The line break `printf`/`echo` adds is not part of the token; a CRLF from Windows is not either.
+    let out = env.run_with_stdin(&args, Some(b"ghp_secret value \r\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        mock.last("POST").body.unwrap(),
+        json!({"name": "gh", "type": "ghcr", "username": "octo", "token": "ghp_secret value "})
+    );
+    assert!(!stderr.contains("registry token in the process list"), "stdin is the right way, so no nagging: {stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ghp_secret"), "the token was printed");
+}
+
+#[test]
+fn credentials_token_on_argv_still_works_but_warns_without_repeating_it() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token", "ghp_argv_secret", "-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(mock.last("POST").body.unwrap()["token"], "ghp_argv_secret");
+    assert!(stderr.contains("warning: --token puts the registry token in the process list"), "{stderr}");
+    assert!(stderr.contains("--token-stdin"), "{stderr}");
+    assert!(!stderr.contains("ghp_argv_secret"), "the warning must not echo the token: {stderr}");
+}
+
+#[test]
+fn credentials_token_is_required_from_exactly_one_place() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+
+    // Nothing given: say how, and do not look at the account or the network.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    assert_eq!(out.status.code(), Some(6));
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert!(err["remediation"].as_str().unwrap().contains("--token-stdin"), "{err}");
+
+    // --token-stdin with nothing piped (stdin closed) must fail, not hang.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stdin was empty"));
+    let out = env.run_with_stdin(&args, Some(b"\n"));
+    assert_eq!(out.status.code(), Some(6), "a blank line is not a token");
+
+    // Both: refused by the parser.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token", "x", "--token-stdin", "-a", "work"]);
+    assert_eq!(env.run_with_stdin(&args, Some(b"y")).status.code(), Some(6));
+
+    // Oversized input is not a token.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, Some(&vec![b'a'; 70 * 1024]));
+    assert_eq!(out.status.code(), Some(6));
+
+    assert_eq!(paths(&mock, "POST"), Vec::<String>::new(), "none of those reached the API");
+}
+
+#[test]
+fn credentials_errors_do_not_echo_the_token_back() {
+    let mock = Mock::start(vec![
+        me(),
+        (
+            "POST",
+            "registry-credentials",
+            400,
+            json!({"code": "invalid_request", "message": "token ghp_leaky is not valid"}),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, Some(b"ghp_leaky"));
+    assert_eq!(out.status.code(), Some(6));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("ghp_leaky"), "{stderr}");
+    assert!(stderr.contains("[redacted]"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --image shorthand
+
+#[test]
+fn create_expands_docker_hub_shorthand_and_says_so() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let sent = |image: &str| {
+        let out = env.run(&create_args_with_image(image));
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+        (mock.last("POST").body.unwrap()["deployment"]["url"].as_str().unwrap().to_string(), stderr)
+    };
+
+    let (url, stderr) = sent("nginx");
+    assert_eq!(url, "docker.io/library/nginx:latest");
+    assert!(stderr.contains("note: --image 'nginx' was sent as 'docker.io/library/nginx:latest'"), "{stderr}");
+
+    assert_eq!(sent("nginx:1.27").0, "docker.io/library/nginx:1.27");
+    assert_eq!(sent("user/app").0, "docker.io/user/app:latest");
+
+    // A registry host means the reference is complete: sent as written, and no note.
+    for image in ["ghcr.io/o/r:tag", "localhost:5000/app", "docker.io/library/nginx:1.27"] {
+        let (url, stderr) = sent(image);
+        assert_eq!(url, image);
+        assert!(!stderr.contains("note: --image"), "{image}: {stderr}");
+    }
+    let digest = "ghcr.io/o/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert_eq!(sent(digest).0, digest);
+    let hub_digest = "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert_eq!(sent(hub_digest).0, format!("docker.io/library/{hub_digest}"));
+}
+
+fn create_args_with_image(image: &str) -> Vec<&str> {
+    vec![
+        "services",
+        "create",
+        "--project-id",
+        "p1",
+        "--name",
+        "web",
+        "--server-id",
+        "srv1",
+        "--image",
+        image,
+        "-a",
+        "work",
+        "--json",
+    ]
+}
+
+#[test]
+fn update_expands_the_image_and_keeps_credentials_in_the_same_registry() {
+    let current =
+        json!({"id": "s1", "deployment": {"url": "docker.io/acme/app:1", "registryAuthenticationId": "cred_1"}});
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, current.clone()), ("PATCH", SVC, 200, current)]);
+    let env = Env::new(&mock).with_account();
+    let update = |image: &str| {
+        let out = env.run(&[
+            "services",
+            "update",
+            "--project-id",
+            "p1",
+            "--service-id",
+            "s1",
+            "--image",
+            image,
+            "-a",
+            "work",
+            "--json",
+        ]);
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+        (mock.last("PATCH").body.unwrap()["deployment"].clone(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+
+    // `acme/app:2` is Docker Hub like the stored `docker.io/acme/app:1`, so the credentials stay.
+    let (dep, stderr) = update("acme/app:2");
+    assert_eq!(dep, json!({"url": "docker.io/acme/app:2", "registryAuthenticationId": "cred_1"}));
+    assert!(stderr.contains("note: --image 'acme/app:2' was sent as 'docker.io/acme/app:2'"), "{stderr}");
+
+    // Another registry drops them, exactly as before.
+    let (dep, stderr) = update("ghcr.io/acme/app:2");
+    assert_eq!(dep, json!({"url": "ghcr.io/acme/app:2"}));
+    assert!(!stderr.contains("note: --image"), "{stderr}");
+}
+
+#[test]
+fn a_rejected_image_command_says_nothing_about_the_image() {
+    // --image with --repo is refused before the value is looked at, so no note is printed.
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock).with_account();
+    let out = env.run(&[
+        "services",
+        "create",
+        "--project-id",
+        "p1",
+        "--name",
+        "web",
+        "--server-id",
+        "srv1",
+        "--image",
+        "nginx",
+        "--repo",
+        "https://github.com/o/r",
+        "-a",
+        "work",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("note: --image"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// agent init
+
+impl Env {
+    /// A fresh project directory to run in; `agent init` writes relative to the working directory.
+    fn project(&self, name: &str) -> PathBuf {
+        let dir = self.dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn run_in(&self, dir: &std::path::Path, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_sliplane"))
+            .args(args)
+            .current_dir(dir)
+            .env("SLIPLANE_CONFIG_DIR", &self.dir)
+            .env("SLIPLANE_SECRET_STORE", "plaintext")
+            .env("SLIPLANE_API_URL", &self.api)
+            .output()
+            .unwrap()
+    }
+}
+
+fn status_of(out: &Output) -> Value {
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)))
+}
+
+#[test]
+fn agent_init_creates_the_file_and_a_rerun_changes_nothing() {
+    // No account, no routes: it must not need either, nor make a request.
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("fresh");
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(status_of(&out), json!({"status": "created", "path": "AGENTS.md"}));
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with("<!-- sliplane:begin -->\n") && text.trim_end().ends_with("<!-- sliplane:end -->"));
+    for needed in ["sliplane agent-readme", "--account", "API key", "--json"] {
+        assert!(text.contains(needed), "{needed}: {text}");
+    }
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(status_of(&out)["status"], "unchanged");
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), text);
+    assert!(mock.requests().is_empty(), "agent init must not touch the network");
+}
+
+#[test]
+fn agent_init_replaces_its_section_in_place_and_keeps_everything_else() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("existing");
+    let mine_before = "# My project\n\nRules I wrote.\n\n";
+    let mine_after = "\n## Other tooling\n\n- keep me";
+    std::fs::write(
+        dir.join("AGENTS.md"),
+        format!("{mine_before}<!-- sliplane:begin -->\nan old, stale version\n<!-- sliplane:end -->{mine_after}"),
+    )
+    .unwrap();
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(status_of(&out)["status"], "updated");
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with(mine_before) && text.ends_with(mine_after), "{text}");
+    assert!(text.contains("sliplane agent-readme") && !text.contains("stale"), "{text}");
+    assert_eq!(text.matches("sliplane:begin").count(), 1);
+
+    // Text with no markers gets the section appended, and the original text stays as it was.
+    std::fs::write(dir.join("CLAUDE.md"), "# Notes\nno trailing blank line").unwrap();
+    let out = env.run_in(&dir, &["agent", "init", "--file", "CLAUDE.md", "--json"]);
+    assert_eq!(status_of(&out), json!({"status": "updated", "path": "CLAUDE.md"}));
+    let text = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+    assert!(text.starts_with("# Notes\nno trailing blank line\n\n<!-- sliplane:begin -->"), "{text}");
+}
+
+#[test]
+fn agent_init_print_shows_the_section_and_writes_nothing() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("printing");
+
+    let out = env.run_in(&dir, &["agent", "init", "--print"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("<!-- sliplane:begin -->") && text.contains("sliplane agent-readme"), "{text}");
+    assert!(!dir.join("AGENTS.md").exists());
+
+    let out = env.run_in(&dir, &["agent", "init", "--print", "--json"]);
+    assert!(status_of(&out)["content"].as_str().unwrap().ends_with("<!-- sliplane:end -->"));
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "--print wrote something");
+}
+
+#[test]
+fn agent_init_will_not_write_outside_the_working_directory() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("inside");
+    let outside = env.dir.join("escaped.md");
+    let outside_path = outside.to_string_lossy().into_owned();
+
+    for file in ["../escaped.md", "sub/../../escaped.md", outside_path.as_str()] {
+        let out = env.run_in(&dir, &["agent", "init", "--file", file, "--json"]);
+        assert_eq!(out.status.code(), Some(6), "{file}: {}", String::from_utf8_lossy(&out.stdout));
+        assert!(!outside.exists(), "{file} escaped");
+    }
+
+    // Only Markdown, only regular files, and the directory has to exist.
+    for (file, why) in [("script.sh", "Markdown"), ("nowhere/AGENTS.md", "does not exist"), ("", "empty")] {
+        let out = env.run_in(&dir, &["agent", "init", "--file", file, "--json"]);
+        assert_eq!(out.status.code(), Some(6), "{file}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains(why), "{file}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    std::fs::create_dir(dir.join("dir.md")).unwrap();
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--file", "dir.md", "--json"]).status.code(), Some(6));
+
+    // A file inside a subdirectory of the working directory is fine.
+    std::fs::create_dir(dir.join("docs")).unwrap();
+    let out = env.run_in(&dir, &["agent", "init", "--file", "docs/AGENTS.md", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("docs").join("AGENTS.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_init_will_not_follow_a_symbolic_link_out_of_the_tree() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("linked");
+    let elsewhere = env.project("elsewhere");
+    std::fs::write(elsewhere.join("target.md"), "not yours").unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("target.md"), dir.join("AGENTS.md")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.join("linkdir")).unwrap();
+
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--json"]).status.code(), Some(6));
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--file", "linkdir/new.md", "--json"]).status.code(), Some(6));
+    assert_eq!(std::fs::read_to_string(elsewhere.join("target.md")).unwrap(), "not yours");
+    assert!(!elsewhere.join("new.md").exists());
+}
+
+#[test]
+fn agent_init_refuses_broken_markers_and_leaves_the_file_alone() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("broken");
+    let original = "# Mine\n<!-- sliplane:begin -->\nhalf a section\n";
+    std::fs::write(dir.join("AGENTS.md"), original).unwrap();
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nothing was written"));
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), original);
+
+    // Not text at all: also left alone.
+    std::fs::write(dir.join("AGENTS.md"), b"\xff\xfe binary").unwrap();
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--json"]).status.code(), Some(6));
+    assert_eq!(std::fs::read(dir.join("AGENTS.md")).unwrap(), b"\xff\xfe binary");
+}
+
+#[test]
+fn agent_init_keeps_crlf_files_crlf() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("crlf");
+    std::fs::write(dir.join("AGENTS.md"), "# Mine\r\n\r\ntext\r\n").unwrap();
+    assert_eq!(status_of(&env.run_in(&dir, &["agent", "init", "--json"]))["status"], "updated");
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with("# Mine\r\n\r\ntext\r\n\r\n<!-- sliplane:begin -->\r\n"), "{text:?}");
+    assert!(!text.replace("\r\n", "").contains('\n'), "mixed line endings: {text:?}");
+    assert_eq!(status_of(&env.run_in(&dir, &["agent", "init", "--json"]))["status"], "unchanged");
 }
