@@ -15,6 +15,7 @@ use crate::account::{self, Resolved};
 use crate::cli::*;
 use crate::client::{Client, query, seg};
 use crate::error::{Error, Result};
+use crate::resolve::{self, Kind};
 use crate::{obj, output, readme};
 
 pub fn run(command: Command) -> Result<()> {
@@ -86,11 +87,17 @@ fn projects(c: Projects) -> Result<()> {
     match c {
         Projects::List(a) => print(client(&a)?.get("projects")?),
         Projects::Create { name, a } => print(client(&a)?.post("projects", &json!({ "name": name }))?),
-        Projects::Update { project_id, name, a } => {
-            print(client(&a)?.patch(&format!("projects/{}", seg(&project_id)), &json!({ "name": name }))?)
+        Projects::Update { p, name, a } => {
+            let client = client(&a)?;
+            let mut project_id = p.project_id;
+            resolve::one(&client, Kind::Project, &mut project_id, &p.project)?;
+            print(client.patch(&format!("projects/{}", seg(&project_id)), &json!({ "name": name }))?)
         }
-        Projects::Delete { project_id, a } => {
-            let r = client(&a)?.delete(&format!("projects/{}", seg(&project_id)))?;
+        Projects::Delete { p, a } => {
+            let client = client(&a)?;
+            let mut project_id = p.project_id;
+            resolve::one(&client, Kind::Project, &mut project_id, &p.project)?;
+            let r = client.delete(&format!("projects/{}", seg(&project_id)))?;
             done(r, "deleted", obj! { "projectId" => project_id })
         }
     }
@@ -105,7 +112,15 @@ pub(crate) fn metrics_query(r: &Range) -> String {
     query(&[("range", Some(r.range.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "1h".into())))])
 }
 
-fn servers(c: Servers) -> Result<()> {
+fn servers(mut c: Servers) -> Result<()> {
+    if let Some(s) = c.server_mut() {
+        s.check()?;
+    }
+    if let Some(s) = c.server_mut()
+        && s.needs_lookup()
+    {
+        s.resolve(&client(&s.a)?)?;
+    }
     match c {
         Servers::List(a) => print(client(&a)?.get("servers")?),
         Servers::Get(s) => print(client(&s.a)?.get(&format!("servers/{}", seg(&s.server_id)))?),
@@ -171,7 +186,15 @@ fn ip_allow_list(ip: &IpAllow) -> Option<Value> {
     })
 }
 
-fn postgres(c: Postgres) -> Result<()> {
+fn postgres(mut c: Postgres) -> Result<()> {
+    if let Some(p) = c.database_mut() {
+        p.check()?;
+    }
+    if let Some(p) = c.database_mut()
+        && p.needs_lookup()
+    {
+        p.resolve(&client(&p.a)?)?;
+    }
     let at = |p: &PgId, tail: &str| format!("postgres/{}{tail}", seg(&p.postgres_id));
     match c {
         Postgres::List(a) => print(client(&a)?.get("postgres")?),
@@ -297,7 +320,15 @@ fn ssh_keys(c: SshKeys) -> Result<()> {
     }
 }
 
-fn buckets(c: Buckets) -> Result<()> {
+fn buckets(mut c: Buckets) -> Result<()> {
+    if let Some(b) = c.bucket_mut() {
+        b.check()?;
+    }
+    if let Some(b) = c.bucket_mut()
+        && b.needs_lookup()
+    {
+        b.resolve(&client(&b.a)?)?;
+    }
     let at = |b: &BucketId, tail: &str| format!("buckets/{}{tail}", seg(&b.bucket_id));
     match c {
         Buckets::List(a) => print(client(&a)?.get("buckets")?),

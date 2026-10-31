@@ -152,6 +152,14 @@ scripted call fails with a remediation instead of hanging.
 working anywhere else it was pasted until it is revoked in the Sliplane dashboard, and the command
 says so in its output. Do not reword that into something that sounds like revocation.
 
+**Names are resolved once, before dispatch, and ids cost nothing.** `--service`, `--project`, `--server`,
+`--postgres` and `--bucket` sit beside the `--*-id` flags (which are `default_value = ""` rather than
+required, so `check()` reports a missing one as `invalid_input` before any account or network use).
+`Services::service_mut` and its siblings in `cli.rs` hand `run` the reference a command carries; they
+have no wildcard arm on purpose, so a new command must say whether it names a resource. `resolve.rs`
+matches an id first, then an exact case-sensitive name, and refuses a shared name with both ids
+instead of picking. Keep it that way: with no delete confirmation, a wrong guess is a wrong delete.
+
 **The preset catalog is not the Sliplane API.** `presets.rs` fetches `sliplane.io/api/presets` with its
 own bare HTTP agent, so the API key can never reach it, and `presets list|show` take no `--account`.
 It has no version field, so `parse` rejects anything it does not recognise instead of guessing: the

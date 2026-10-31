@@ -39,7 +39,7 @@ Status: **Have** (already here), **Done** (ported), **Open** (not built; the not
 | Default project in config | **Declined** | Same reason; it also hides ambiguity. |
 | `config set output text`, text tables | **Declined** | Output is YAML first, JSON on request. |
 | Every command checks the token's team via `/me` | **Open** | Optional guard, one extra request per call. Accounts already record their organization. |
-| Projects, servers, services, databases and buckets by **name or ID** | **Open** | Medium, and the largest usability gap. Add `--project`, `--service`, `--server` beside the `--*-id` flags, never instead. An ID match wins, then an exact name; two matches is `invalid_input` (exit 6) listing the IDs, none is `not_found` (4). Echo the resolved name and ID on every change, since deletes take no confirmation. Their lookup lists every project on each call. |
+| Projects, servers, services, databases and buckets by **name or ID** | **Done** | `--project`, `--service`, `--server`, `--postgres`, `--bucket` beside the `--*-id` flags. An ID match wins, then an exact case-sensitive name; two matches is `invalid_input` (exit 6) listing the IDs, none is `not_found` (4) listing what exists. Ids given alone cost no extra request; a `note:` on stderr says which id a name chose, since deletes take no confirmation. `--service-id` without a project finds the project. Their lookup lists every project on each call, and so does ours when no project is named. |
 
 ## Services
 

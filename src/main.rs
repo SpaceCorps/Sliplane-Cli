@@ -10,6 +10,7 @@ mod output;
 mod patharg;
 mod presets;
 mod readme;
+mod resolve;
 mod secrets;
 mod timeparse;
 

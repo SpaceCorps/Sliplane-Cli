@@ -137,8 +137,12 @@ impl Env {
         let out = self.run(&all);
         let parse = |b: &[u8]| {
             let s = String::from_utf8_lossy(b);
-            // The plaintext store warns on stderr before any envelope.
-            let s = s.lines().filter(|l| !l.starts_with("warning:")).collect::<Vec<_>>().join("\n");
+            // The plaintext store warns, and name lookups note what they chose, on stderr before any envelope.
+            let s = s
+                .lines()
+                .filter(|l| !l.starts_with("warning:") && !l.starts_with("note:"))
+                .collect::<Vec<_>>()
+                .join("\n");
             serde_json::from_str(&s).unwrap_or(Value::Null)
         };
         (out.status.code().unwrap(), parse(&out.stdout), parse(&out.stderr))
@@ -1475,4 +1479,207 @@ fn completion_prints_a_script_for_each_shell() {
         assert!(script.contains("presets"), "{shell} completions should know the new commands");
     }
     assert_eq!(env.run(&["completion", "tcsh"]).status.code(), Some(6));
+}
+
+// ---------------------------------------------------------------------------------------------
+// names for ids
+
+fn two_projects() -> Vec<Route> {
+    vec![
+        ("GET", "projects", 200, json!([{"id": "p1", "name": "Main"}, {"id": "p2", "name": "Lab"}])),
+        (
+            "GET",
+            "projects/p1/services",
+            200,
+            json!([{"id": "s1", "name": "web", "projectId": "p1"}, {"id": "s2", "name": "worker", "projectId": "p1"}]),
+        ),
+        ("GET", "projects/p2/services", 200, json!([{"id": "s3", "name": "web", "projectId": "p2"}])),
+        ("GET", "projects/p1/services/s1", 200, json!({"id": "s1", "name": "web"})),
+        ("GET", "projects/p1/services/s2", 200, json!({"id": "s2", "name": "worker"})),
+        ("GET", "projects/p2/services/s3", 200, json!({"id": "s3", "name": "web"})),
+    ]
+}
+
+fn mock_with(extra: Vec<Route>) -> Mock {
+    let mut routes = vec![me()];
+    routes.extend(extra);
+    Mock::start(routes)
+}
+
+fn paths(mock: &Mock, method: &str) -> Vec<String> {
+    mock.requests().into_iter().filter(|r| r.method == method).map(|r| r.path).collect()
+}
+
+#[test]
+fn ids_alone_make_no_lookup_requests() {
+    let mock = mock_with(two_projects());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let (code, _, err) = env.json(&["services", "get", "--project-id", "p1", "--service-id", "s1", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    let made: Vec<String> = mock.requests()[before..].iter().map(|r| r.path.clone()).collect();
+    assert_eq!(made, ["projects/p1/services/s1"], "an id-only command must cost exactly one request");
+}
+
+#[test]
+fn a_service_is_found_by_name_within_a_named_project() {
+    let mock = mock_with(two_projects());
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["services", "get", "--project", "Main", "--service", "web", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["id"], "s1");
+    assert_eq!(mock.last("GET").path, "projects/p1/services/s1");
+    let gets = paths(&mock, "GET");
+    assert!(gets.contains(&"projects".to_string()) && gets.contains(&"projects/p1/services".to_string()), "{gets:?}");
+}
+
+#[test]
+fn a_unique_name_is_found_without_naming_the_project() {
+    let mock = mock_with(two_projects());
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["services", "get", "--service", "worker", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["id"], "s2");
+    assert_eq!(mock.last("GET").path, "projects/p1/services/s2");
+}
+
+#[test]
+fn an_id_alone_finds_its_project() {
+    let mock = mock_with(two_projects());
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["services", "get", "--service-id", "s3", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["id"], "s3");
+    assert_eq!(mock.last("GET").path, "projects/p2/services/s3");
+
+    let (code, _, err) = env.json(&["services", "get", "--service-id", "nope", "-a", "work"]);
+    assert_eq!(code, 4);
+    assert!(err["error"].as_str().unwrap().contains("'nope'"), "{err}");
+}
+
+#[test]
+fn a_name_two_services_share_is_refused_with_both_ids() {
+    let mut routes = two_projects();
+    routes.push(("DELETE", "projects/p2/services/s3", 204, json!(null)));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["services", "delete", "--service", "web", "-a", "work"]);
+    assert_eq!(code, 6, "{err}");
+    let detail = err["detail"].as_str().unwrap();
+    assert!(detail.contains("s1 (project p1)") && detail.contains("s3 (project p2)"), "{detail}");
+    assert!(err["remediation"].as_str().unwrap().contains("--project"), "{err}");
+    assert!(paths(&mock, "DELETE").is_empty(), "nothing may be deleted when the name is ambiguous");
+
+    // Naming the project makes it unambiguous.
+    let (code, _, err) = env.json(&["services", "delete", "--project", "Lab", "--service", "web", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("DELETE").path, "projects/p2/services/s3");
+}
+
+#[test]
+fn an_unknown_name_is_not_found_and_shows_what_exists() {
+    let mock = mock_with(two_projects());
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["services", "get", "--project", "Main", "--service", "nope", "-a", "work"]);
+    assert_eq!(code, 4);
+    assert!(err["detail"].as_str().unwrap().contains("worker (s2)"), "{err}");
+    assert_eq!(err["remediation"], "sliplane services list --account <account>");
+
+    let (code, _, err) = env.json(&["services", "get", "--project", "Nowhere", "--service", "web", "-a", "work"]);
+    assert_eq!(code, 4);
+    assert!(err["error"].as_str().unwrap().contains("No project"), "{err}");
+}
+
+#[test]
+fn an_id_and_a_name_for_the_same_thing_conflict_and_neither_is_refused_early() {
+    let mock = mock_with(two_projects());
+    let env = Env::new(&mock);
+    // No account exists here: both must fail at argument checking, before any keystore or network use.
+    let (code, _, err) = env.json(&["services", "get", "--service-id", "s1", "--service", "web", "-a", "work"]);
+    assert_eq!(code, 6, "{err}");
+    let (code, _, err) = env.json(&["services", "get", "--project-id", "p1", "-a", "work"]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("--service-id"), "{err}");
+    assert!(mock.requests().is_empty());
+}
+
+#[test]
+fn servers_databases_and_buckets_take_names() {
+    let mock = mock_with(vec![
+        ("GET", "servers", 200, json!([{"id": "server_1", "name": "big"}])),
+        ("GET", "servers/server_1", 200, json!({"id": "server_1"})),
+        ("GET", "postgres", 200, json!([{"id": "pg_1", "name": "orders"}])),
+        ("GET", "postgres/pg_1", 200, json!({"id": "pg_1"})),
+        ("GET", "buckets", 200, json!([{"id": "bucket_1", "name": "assets"}])),
+        ("GET", "buckets/bucket_1/keys", 200, json!([])),
+    ]);
+    let env = Env::new(&mock).with_account();
+    assert_eq!(env.json(&["servers", "get", "--server", "big", "-a", "work"]).0, 0);
+    assert_eq!(mock.last("GET").path, "servers/server_1");
+    assert_eq!(env.json(&["postgres", "get", "--postgres", "orders", "-a", "work"]).0, 0);
+    assert_eq!(mock.last("GET").path, "postgres/pg_1");
+    assert_eq!(env.json(&["buckets", "keys", "--bucket", "assets", "-a", "work"]).0, 0);
+    assert_eq!(mock.last("GET").path, "buckets/bucket_1/keys");
+    let (code, _, err) = env.json(&["postgres", "get", "--postgres", "nope", "-a", "work"]);
+    assert_eq!(code, 4);
+    assert!(err["error"].as_str().unwrap().contains("Postgres database"), "{err}");
+}
+
+#[test]
+fn projects_are_renamed_and_deleted_by_name() {
+    let mock = mock_with(
+        two_projects()
+            .into_iter()
+            .take(1)
+            .chain([
+                ("PATCH", "projects/p1", 200, json!({"id": "p1", "name": "Primary"})),
+                ("DELETE", "projects/p2", 204, json!(null)),
+            ])
+            .collect(),
+    );
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["projects", "update", "--project", "Main", "--name", "Primary", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("PATCH").path, "projects/p1");
+    let (code, out, err) = env.json(&["projects", "delete", "--project", "Lab", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["projectId"], "p2");
+    assert_eq!(mock.last("DELETE").path, "projects/p2");
+}
+
+#[test]
+fn create_takes_a_project_and_server_by_name() {
+    let mut routes = two_projects().into_iter().take(1).collect::<Vec<_>>();
+    routes.push(("GET", "servers", 200, json!([{"id": "server_1", "name": "big"}])));
+    routes.push(("POST", "projects/p1/services", 201, json!({"id": "s9"})));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&[
+        "services",
+        "create",
+        "--project",
+        "Main",
+        "--name",
+        "api",
+        "--server",
+        "big",
+        "--image",
+        "nginx",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(body["serverId"], "server_1");
+    assert_eq!(mock.last("POST").path, "projects/p1/services");
+}
+
+#[test]
+fn services_list_takes_a_project_by_name() {
+    let mock = mock_with(two_projects());
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["services", "list", "--project", "Lab", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out[0]["id"], "s3");
+    assert_eq!(mock.last("GET").path, "projects/p2/services");
 }
