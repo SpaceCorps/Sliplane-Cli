@@ -11,7 +11,9 @@ mod patharg;
 mod presets;
 mod readme;
 mod resolve;
+mod s3;
 mod secrets;
+mod sigv4;
 mod timeparse;
 
 use std::process::ExitCode;

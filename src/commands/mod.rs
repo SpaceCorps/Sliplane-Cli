@@ -5,6 +5,7 @@ mod accounts;
 mod login;
 mod logs;
 mod presets;
+mod s3;
 mod services;
 mod wait;
 
@@ -48,6 +49,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Oauth(c) => oauth(c),
         Command::SshKeys(c) => ssh_keys(c),
         Command::Pricing(a) => print(client(&a)?.get("pricing")?),
+        Command::S3(c) => s3::run(c),
     }
 }
 

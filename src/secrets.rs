@@ -20,6 +20,12 @@ pub fn account_key(name: &str) -> String {
     format!("account:{}", name.to_lowercase())
 }
 
+/// The S3 key pair `sliplane s3 connect` made for a bucket, as JSON: one entry per account and
+/// bucket, so two accounts never share a key and a bucket's pair is found by its id.
+pub fn s3_key(account: &str, bucket_id: &str) -> String {
+    format!("s3:{}:{}", account.to_lowercase(), bucket_id)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Store {
     Dpapi,
