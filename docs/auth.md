@@ -15,7 +15,7 @@ The Sliplane CLI interfaces directly with the Sliplane REST API (v0). Authentica
 ## Prerequisites
 - A Sliplane account ([sliplane.io](https://sliplane.io))
 - A valid API key generated from the team settings page (`https://sliplane.io/app/team/api`)
-- Sliplane CLI installed on your machine (`cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked`)
+- Sliplane CLI installed on your machine: `curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh` on macOS, Linux or WSL, or `irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex` in Windows PowerShell
 
 ## Authentication Flow
 
