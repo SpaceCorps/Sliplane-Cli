@@ -3326,6 +3326,13 @@ fn start_s3(opts: S3Opts) -> MockS3 {
                 }
                 let _ = write!(stream, "\r\n");
                 let _ = stream.write_all(&out_body);
+                // Hang up politely: FIN after the body, then wait for the client to finish reading
+                // and close. Dropping a socket that still has unread input resets the connection,
+                // and on Windows a reset also throws away the body the client has not read yet.
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let _ = std::io::copy(&mut reader, &mut std::io::sink());
             });
         }
     });
