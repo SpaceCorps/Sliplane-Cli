@@ -6,6 +6,7 @@ mod login;
 mod logs;
 mod presets;
 mod services;
+mod ssh;
 mod wait;
 
 use clap::CommandFactory;

@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{Deploy, ServiceRef, Services, WaitFlags};
 use crate::client::{Client, query, seg};
-use crate::commands::{client, done, logs, metrics_query, print, wait};
+use crate::commands::{client, done, logs, metrics_query, print, ssh, wait};
 use crate::error::{Error, ErrorCode, Result};
 use crate::resolve::{self, Kind};
 use crate::{account, obj, patharg, timeparse};
@@ -187,6 +187,10 @@ pub fn run(mut c: Services) -> Result<()> {
         Services::DetachSshKey { s, key_id } => {
             let r = client(&s.a)?.delete(&path(&s, &format!("/ssh-keys/{}", seg(&key_id))))?;
             done(r, "detached", with(ids(&s), "keyId", &key_id))
+        }
+        Services::Ssh { s, ttl, command } => ssh::shell(&client(&s.a)?, &s, ttl.as_deref(), command),
+        Services::Tunnel { s, local_port, remote_port, tunnel_for, ttl } => {
+            ssh::tunnel(&client(&s.a)?, &s, ttl.as_deref(), local_port, remote_port, tunnel_for.as_deref())
         }
     }
 }

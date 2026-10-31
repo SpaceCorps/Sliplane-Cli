@@ -597,6 +597,35 @@ pub enum Services {
     },
     /// Rotate the deploy hook URL (needs secrets:read); the old URL stops working immediately
     RotateDeployHook(ServiceRef),
+    /// Run a command on a service, or open a shell, over SSH with a key that exists only for the session
+    Ssh {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// Lifetime of the temporary key if cleanup cannot run: 6m to 30d (default 1h)
+        #[arg(long, value_name = "DURATION")]
+        ttl: Option<String>,
+        /// The command to run on the service, after `--`. Several words are run as given; a single word is
+        /// a command line for the remote shell. Omit it for an interactive shell
+        #[arg(last = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Forward a local port to a port on a service over SSH, until interrupted or --for elapses
+    Tunnel {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// Local port to listen on (127.0.0.1 only)
+        #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+        local_port: u16,
+        /// Port to reach inside the service (as localhost:PORT there)
+        #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+        remote_port: u16,
+        /// Close the tunnel after this long (30s, 5m, 1h) instead of running until interrupted
+        #[arg(long = "for", value_name = "DURATION")]
+        tunnel_for: Option<String>,
+        /// Lifetime of the temporary key if cleanup cannot run: 6m to 30d (default 1h)
+        #[arg(long, value_name = "DURATION")]
+        ttl: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1028,7 +1057,9 @@ impl Services {
             | Services::UpdateVolume { s, .. }
             | Services::DetachVolume { s, .. }
             | Services::AttachSshKey { s, .. }
-            | Services::DetachSshKey { s, .. } => Some(s),
+            | Services::DetachSshKey { s, .. }
+            | Services::Ssh { s, .. }
+            | Services::Tunnel { s, .. } => Some(s),
         }
     }
 }

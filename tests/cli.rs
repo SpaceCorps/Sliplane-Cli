@@ -1683,3 +1683,551 @@ fn services_list_takes_a_project_by_name() {
     assert_eq!(out[0]["id"], "s3");
     assert_eq!(mock.last("GET").path, "projects/p2/services");
 }
+
+// ---------------------------------------------------------------------------------------------
+// services ssh / services tunnel
+//
+// ssh and ssh-keygen are replaced by examples/fake_ssh*.rs (SLIPLANE_SSH, SLIPLANE_SSH_KEYGEN), which
+// log how they were called into env.dir/fake.log. Cargo builds the examples for `cargo test`.
+
+const SECRET_KEY: &str = "FAKE-PRIVATE-KEY-MATERIAL";
+
+fn fake_tool(name: &str) -> PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_BIN_EXE_sliplane")).parent().unwrap().join("examples");
+    let path = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    // `cargo test --test cli` builds the binary but not the examples; once per process is enough.
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        if !path.is_file() {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let status = Command::new(cargo).args(["build", "--examples", "--quiet"]).status().unwrap();
+            assert!(status.success(), "`cargo build --examples` failed");
+        }
+    });
+    assert!(path.is_file(), "{} is missing; run `cargo build --examples`", path.display());
+    path
+}
+
+fn ssh_routes() -> Vec<Route> {
+    vec![
+        (
+            "POST",
+            "ssh-keys",
+            201,
+            json!({"id": "pk_1", "name": "n", "publicKey": "k", "fingerprint": "SHA256:x", "createdAt": "2026-10-31T12:00:00Z"}),
+        ),
+        (
+            "PUT",
+            "projects/p1/services/s1/ssh-keys/pk_1",
+            200,
+            json!({"host": "127.0.0.1", "port": 2222, "username": "service_1"}),
+        ),
+        ("DELETE", "projects/p1/services/s1/ssh-keys/pk_1", 204, json!(null)),
+        ("DELETE", "ssh-keys/pk_1", 204, json!(null)),
+    ]
+}
+
+/// `services <verb> --project-id p1 --service-id s1 -a work`, then `rest`.
+fn svc_args<'a>(verb: &'a str, rest: &[&'a str]) -> Vec<&'a str> {
+    [&["services", verb, "--project-id", "p1", "--service-id", "s1", "-a", "work"][..], rest].concat()
+}
+
+fn ssh_command(env: &Env, args: &[&str]) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_sliplane"));
+    c.args(args)
+        .env("SLIPLANE_CONFIG_DIR", &env.dir)
+        .env("SLIPLANE_SECRET_STORE", "plaintext")
+        .env("SLIPLANE_API_URL", &env.api)
+        .env("SLIPLANE_SSH", fake_tool("fake_ssh"))
+        .env("SLIPLANE_SSH_KEYGEN", fake_tool("fake_ssh_keygen"))
+        .env("SLIPLANE_SSH_RETRY_MS", "20")
+        .env("FAKE_SSH_LOG", env.dir.join("fake.log"));
+    c
+}
+
+struct Ran {
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn ssh_run(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> Ran {
+    let mut c = ssh_command(env, args);
+    for (k, v) in extra {
+        c.env(k, v);
+    }
+    let out = c.output().unwrap();
+    let ran = Ran {
+        code: out.status.code().unwrap(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    };
+    assert!(!ran.stdout.contains(SECRET_KEY) && !ran.stderr.contains(SECRET_KEY), "the private key was printed");
+    ran
+}
+
+/// What the fake ssh-keygen and ssh were asked, in order.
+fn fake_calls(env: &Env) -> Vec<Value> {
+    std::fs::read_to_string(env.dir.join("fake.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn argv(call: &Value) -> Vec<String> {
+    call["argv"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect()
+}
+
+/// "METHOD path" of every request made after `before` requests.
+fn api_calls(mock: &Mock, before: usize) -> Vec<String> {
+    mock.requests()[before..].iter().map(|r| format!("{} {}", r.method, r.path)).collect()
+}
+
+const CREATE: &str = "POST ssh-keys";
+const ATTACH: &str = "PUT projects/p1/services/s1/ssh-keys/pk_1";
+const DETACH: &str = "DELETE projects/p1/services/s1/ssh-keys/pk_1";
+const DELETE: &str = "DELETE ssh-keys/pk_1";
+
+/// The `--json` error envelope on stderr: ssh's own output and warnings may precede it.
+fn envelope(stderr: &str) -> Value {
+    let lines: Vec<&str> = stderr.lines().collect();
+    let start = lines.iter().position(|l| *l == "{").unwrap_or_else(|| panic!("no envelope in: {stderr}"));
+    serde_json::from_str(&lines[start..].join("\n")).unwrap()
+}
+
+/// Unix seconds of `2026-10-31T12:00:00Z`.
+fn unix_of(t: &str) -> i64 {
+    let n = |a: usize, b: usize| t[a..b].parse::<i64>().unwrap();
+    let (y, m, d) = (n(0, 4), n(5, 7), n(8, 10));
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+    days * 86400 + n(11, 13) * 3600 + n(14, 16) * 60 + n(17, 19)
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+#[test]
+fn ssh_runs_a_command_and_removes_the_key() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "ls", "-la", "/app"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    // The command's own output, untouched: nothing of ours around it.
+    assert_eq!(ran.stdout, "fake-ssh stdout\n");
+    assert_eq!(ran.stderr.lines().last(), Some("fake-ssh stderr"), "{}", ran.stderr);
+    assert!(!ran.stderr.contains("note:"), "a clean run says nothing extra: {}", ran.stderr);
+
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+    let created = mock.requests()[before].body.clone().unwrap();
+    assert_eq!(created["publicKey"], "ssh-ed25519 AAAAFAKEPUBLICKEY sliplane-cli");
+    assert!(created["name"].as_str().unwrap().contains("s1"), "{created}");
+    let in_an_hour = unix_of(created["expiresAt"].as_str().unwrap()) - now();
+    assert!((3590..=3610).contains(&in_an_hour), "expiresAt is {in_an_hour}s away");
+    assert!(!created.to_string().contains(SECRET_KEY));
+
+    let calls = fake_calls(&env);
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    let keygen = argv(&calls[0]);
+    assert_eq!(&keygen[..6], ["-q", "-t", "ed25519", "-N", "", "-C"]);
+    let (probe, session) = (argv(&calls[1]), argv(&calls[2]));
+    assert_eq!(calls[1]["probe"], true);
+    assert_eq!(&probe[probe.len() - 5..], ["-T", "--", "127.0.0.1", "exit", "0"]);
+    // Not a terminal on stdin, so no terminal on the far side either, and the command arrives whole.
+    assert_eq!(&session[session.len() - 4..], ["-T", "--", "127.0.0.1", "ls -la /app"]);
+
+    for call in &calls[1..] {
+        assert_eq!(call["identityExisted"], true, "the key must exist while ssh runs");
+        let a = argv(call);
+        let at = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone());
+        assert_eq!(at("-p").as_deref(), Some("2222"));
+        assert_eq!(at("-l").as_deref(), Some("service_1"));
+        assert_eq!(&a[..2], ["-F", "none"]);
+        assert!(a.contains(&"StrictHostKeyChecking=accept-new".to_string()), "{a:?}");
+        assert!(
+            !a.iter().any(|x| x.contains("StrictHostKeyChecking=no") || x.contains("UserKnownHostsFile=/dev/null"))
+        );
+        let known = a.iter().find_map(|x| x.strip_prefix("UserKnownHostsFile=")).expect("a known_hosts of our own");
+        assert!(known.starts_with('"') && known.ends_with("known_hosts\""), "{known}");
+        // The key file is named once, as the -i value, and is gone afterwards.
+        let identity = at("-i").unwrap();
+        assert_eq!(a.iter().filter(|x| x.contains(&identity)).count(), 1);
+        assert!(!std::path::Path::new(&identity).exists(), "the key file outlived the command");
+        assert!(!std::path::Path::new(&identity).parent().unwrap().exists(), "the key directory outlived the command");
+    }
+}
+
+#[test]
+fn the_remote_status_goes_in_the_envelope_and_the_key_is_removed_anyway() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "false"]), &[("FAKE_SSH_EXIT", "3")]);
+    // Exit 1 (error), not 3: the exit codes are ours, and the remote status would collide with them.
+    assert_eq!(ran.code, 1, "{}", ran.stderr);
+    assert_eq!(ran.stdout, "fake-ssh stdout\n");
+    let err = envelope(&ran.stderr);
+    assert_eq!(err["code"], "error");
+    assert_eq!(err["error"], "The remote command exited with status 3.");
+    assert_eq!(err["detail"], "remote exit status: 3");
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE], "cleanup must run when the session fails");
+}
+
+#[test]
+fn an_ssh_failure_of_its_own_is_told_apart_from_a_remote_one() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("FAKE_SSH_EXIT", "255")]);
+    assert_eq!(ran.code, 1);
+    let err = envelope(&ran.stderr);
+    assert!(err["error"].as_str().unwrap().starts_with("ssh itself failed"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("service_1@127.0.0.1:2222"), "{err}");
+}
+
+#[test]
+fn a_command_keeps_its_word_boundaries_and_json_after_the_dashes_is_not_ours() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "sh", "-c", "echo $HOME; ls", "--json"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let session = argv(fake_calls(&env).last().unwrap());
+    assert_eq!(session.last().unwrap(), "sh -c 'echo $HOME; ls' --json");
+
+    // One word is a command line for the remote shell.
+    ssh_run(&env, &svc_args("ssh", &["--", "ls /app | head -1"]), &[]);
+    assert_eq!(argv(fake_calls(&env).last().unwrap()).last().unwrap(), "ls /app | head -1");
+}
+
+#[test]
+fn stdin_reaches_the_remote_command() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let mut child = ssh_command(&env, &svc_args("ssh", &["--", "cat"]))
+        .env("FAKE_SSH_ECHO_STDIN", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello from stdin\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello from stdin\nfake-ssh stdout\n");
+    let session = fake_calls(&env).pop().unwrap();
+    assert_eq!(session["stdinIsTerminal"], false);
+}
+
+#[test]
+fn the_service_is_found_by_name_first() {
+    let mut routes = two_projects();
+    routes.extend(ssh_routes());
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran =
+        ssh_run(&env, &["services", "ssh", "--project", "Main", "--service", "web", "-a", "work", "--", "true"], &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let made = api_calls(&mock, before);
+    assert_eq!(&made[made.len() - 4..], [CREATE, ATTACH, DETACH, DELETE], "{made:?}");
+    assert!(made[..made.len() - 4].iter().all(|c| c.starts_with("GET ")), "{made:?}");
+}
+
+#[test]
+fn it_waits_for_sshd_to_learn_the_key() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "true"]), &[("FAKE_SSH_DENY_FIRST", "3")]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(ran.stderr.contains("attempt 2 of 12") && ran.stderr.contains("attempt 4 of 12"), "{}", ran.stderr);
+    let calls = fake_calls(&env);
+    // keygen, four probes (three denied), the session.
+    assert_eq!(calls.iter().filter(|c| c["probe"] == true).count(), 4);
+    assert_eq!(calls.last().unwrap()["probe"], false);
+}
+
+#[test]
+fn it_gives_up_after_twelve_attempts_and_still_cleans_up() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("FAKE_SSH_DENY_FIRST", "99")]);
+    assert_eq!(ran.code, 1);
+    let err = envelope(&ran.stderr);
+    assert!(err["error"].as_str().unwrap().contains("12 attempts"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("Permission denied (publickey)"), "{err}");
+    assert_eq!(fake_calls(&env).iter().filter(|c| c["probe"] == true).count(), 12);
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+}
+
+#[test]
+fn other_connection_failures_are_not_retried() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let says = "ssh: connect to host 127.0.0.1 port 2222: Connection refused";
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("FAKE_SSH_PROBE_SAYS", says)]);
+    assert_eq!(ran.code, 2, "a refused connection is a network failure: {}", ran.stderr);
+    assert_eq!(envelope(&ran.stderr)["code"], "network");
+    assert_eq!(fake_calls(&env).iter().filter(|c| c["probe"] == true).count(), 1);
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+}
+
+#[test]
+fn a_changed_host_key_stops_the_command_and_says_how_to_forget_it() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(
+        &env,
+        &svc_args("ssh", &["--json", "--", "true"]),
+        &[("FAKE_SSH_PROBE_SAYS", "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.")],
+    );
+    assert_eq!(ran.code, 1);
+    let err = envelope(&ran.stderr);
+    assert!(err["error"].as_str().unwrap().contains("host key"), "{err}");
+    let fix = err["remediation"].as_str().unwrap();
+    assert!(fix.contains("ssh-keygen -R \"[127.0.0.1]:2222\" -f"), "{fix}");
+    assert!(fix.contains("known_hosts"), "{fix}");
+    assert_eq!(fake_calls(&env).iter().filter(|c| c["probe"] == false).count(), 0, "no session may start");
+}
+
+#[test]
+fn a_failed_attach_still_removes_the_key() {
+    let mut routes = ssh_routes();
+    routes[1] = ("PUT", "projects/p1/services/s1/ssh-keys/pk_1", 500, json!({"code": "internal"}));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[]);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+    assert!(fake_calls(&env).iter().all(|c| c["tool"] == "ssh-keygen"), "ssh must not run without a connection");
+}
+
+#[test]
+fn a_read_only_key_fails_before_anything_is_attached() {
+    let mut routes = ssh_routes();
+    routes[0] = ("POST", "ssh-keys", 403, json!({"code": "read_only_token", "message": "read only"}));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[]);
+    assert_eq!(ran.code, 3, "{}", ran.stderr);
+    assert!(envelope(&ran.stderr)["remediation"].as_str().unwrap().contains("read-write"));
+    assert_eq!(api_calls(&mock, before), [CREATE]);
+}
+
+#[test]
+fn a_cleanup_that_fails_is_a_warning_with_the_way_out() {
+    let mut routes = ssh_routes();
+    routes[3] = ("DELETE", "ssh-keys/pk_1", 500, json!({"code": "internal"}));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "true"]), &[]);
+    // The session worked, so the command did; the leftover is reported, not swallowed.
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(ran.stderr.contains("warning: could not delete the temporary SSH key"), "{}", ran.stderr);
+    assert!(ran.stderr.contains("pk_1") && ran.stderr.contains("sliplane ssh-keys delete --key-id pk_1 -a work"));
+    assert!(ran.stderr.contains("deletes itself at 20"), "{}", ran.stderr);
+}
+
+#[test]
+fn a_key_that_is_already_gone_is_not_a_cleanup_failure() {
+    let mut routes = ssh_routes();
+    routes.retain(|r| r.0 != "DELETE"); // the mock answers 404 to both
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "true"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(!ran.stderr.contains("could not"), "{}", ran.stderr);
+}
+
+#[test]
+fn missing_openssh_is_reported_before_anything_is_created() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let empty = env.dir.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+
+    let mut c = ssh_command(&env, &svc_args("ssh", &["--json", "--", "true"]));
+    c.env_remove("SLIPLANE_SSH").env_remove("SLIPLANE_SSH_KEYGEN").env("PATH", &empty);
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = envelope(&String::from_utf8_lossy(&out.stderr));
+    assert!(err["error"].as_str().unwrap().contains("ssh was not found"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("OpenSSH"), "{err}");
+
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("SLIPLANE_SSH", "/no/such/ssh")]);
+    assert_eq!(ran.code, 6);
+    assert_eq!(api_calls(&mock, before), Vec::<String>::new(), "nothing may be created without ssh");
+}
+
+#[test]
+fn the_key_lifetime_is_a_flag_with_limits() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--ttl", "30m", "--", "true"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let created = mock.requests()[before].body.clone().unwrap();
+    let ahead = unix_of(created["expiresAt"].as_str().unwrap()) - now();
+    assert!((1790..=1810).contains(&ahead), "{ahead}");
+
+    let before = mock.requests().len();
+    for bad in ["2m", "31d", "soon"] {
+        let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--ttl", bad, "--", "true"]), &[]);
+        assert_eq!(ran.code, 6, "--ttl {bad}: {}", ran.stderr);
+    }
+    assert_eq!(api_calls(&mock, before), Vec::<String>::new());
+}
+
+#[test]
+fn ssh_needs_a_service_and_an_account() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &["services", "ssh", "-a", "work", "--json"], &[]);
+    assert_eq!(ran.code, 6, "{}", ran.stderr);
+    let ran = ssh_run(&env, &["services", "ssh", "--service-id", "s1", "--project-id", "p1", "--json"], &[]);
+    assert_eq!(ran.code, 7, "{}", ran.stderr);
+    assert_eq!(fake_calls(&env).len(), 0);
+}
+
+#[test]
+fn a_tunnel_reports_when_it_is_up_and_closes_with_the_time_limit() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let port = free_port().to_string();
+    let args = svc_args("tunnel", &["--local-port", &port, "--remote-port", "5432", "--for", "2s", "--json"]);
+    let ran = ssh_run(&env, &args, &[("FAKE_SSH_TUNNEL_SECONDS", "60")]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let up: Value = serde_json::from_str(&ran.stdout).unwrap();
+    assert_eq!(up["status"], "listening");
+    assert_eq!(up["local"], format!("127.0.0.1:{port}"));
+    assert!(up["remote"].as_str().unwrap().starts_with("localhost:5432"), "{up}");
+    assert!(ran.stderr.contains("--for elapsed"), "{}", ran.stderr);
+
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+    let tunnel = argv(fake_calls(&env).last().unwrap());
+    let joined = tunnel.join(" ");
+    assert!(joined.contains("-N -T"), "{joined}");
+    assert!(joined.contains("ExitOnForwardFailure=yes"), "{joined}");
+    assert!(joined.ends_with(&format!("-L 127.0.0.1:{port}:localhost:5432 -- 127.0.0.1")), "{joined}");
+}
+
+#[test]
+fn a_tunnel_refuses_a_port_that_is_taken_and_a_tunnel_that_fails_is_an_error() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port().to_string();
+    let ran = ssh_run(&env, &svc_args("tunnel", &["--local-port", &port, "--remote-port", "80", "--json"]), &[]);
+    assert_eq!(ran.code, 6, "{}", ran.stderr);
+    assert!(envelope(&ran.stderr)["error"].as_str().unwrap().contains("already in use"));
+    assert_eq!(api_calls(&mock, before), Vec::<String>::new());
+    drop(taken);
+
+    let port = free_port().to_string();
+    let args = svc_args("tunnel", &["--local-port", &port, "--remote-port", "80", "--json"]);
+    let ran = ssh_run(&env, &args, &[("FAKE_SSH_TUNNEL_EXIT", "255")]);
+    assert_eq!(ran.code, 1, "{}", ran.stderr);
+    assert!(envelope(&ran.stderr)["error"].as_str().unwrap().contains("before the tunnel was up"));
+    assert!(ran.stdout.is_empty(), "nothing was listening: {}", ran.stdout);
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+}
+
+#[test]
+fn tunnel_ports_are_checked_by_the_parser() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    for args in [
+        svc_args("tunnel", &["--local-port", "0", "--remote-port", "80", "--json"]),
+        svc_args("tunnel", &["--local-port", "70000", "--remote-port", "80", "--json"]),
+        svc_args("tunnel", &["--local-port", "8080", "--json"]),
+    ] {
+        let ran = ssh_run(&env, &args, &[]);
+        assert_eq!(ran.code, 6, "{args:?}: {}", ran.stderr);
+    }
+}
+
+/// Stops a running `sliplane` the way an agent or a service manager would.
+#[cfg(unix)]
+fn terminate(child: &std::process::Child) {
+    use nix::sys::signal::{Signal, kill};
+    kill(nix::unistd::Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
+}
+
+#[cfg(unix)]
+fn wait_for(path: &std::path::Path) {
+    for _ in 0..600 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("{} never appeared", path.display());
+}
+
+#[cfg(unix)]
+#[test]
+fn termination_during_a_session_still_removes_the_key() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let child = ssh_command(&env, &svc_args("ssh", &["--json", "--", "sleep", "100"]))
+        .env("FAKE_SSH_HANG", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for(&env.dir.join("fake.log.started"));
+    terminate(&child);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(envelope(&stderr)["error"].as_str().unwrap().contains("Interrupted"), "{stderr}");
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+}
+
+#[cfg(unix)]
+#[test]
+fn terminating_a_tunnel_closes_it_cleanly() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let port = free_port().to_string();
+    let mut child = ssh_command(&env, &svc_args("tunnel", &["--local-port", &port, "--remote-port", "80", "--json"]))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The announcement is the first line of output, pretty-printed JSON: read up to its closing brace.
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut announcement = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(out.read_line(&mut line).unwrap() > 0, "the tunnel never announced itself");
+        announcement.push_str(&line);
+        if line.trim_end() == "}" {
+            break;
+        }
+    }
+    assert_eq!(serde_json::from_str::<Value>(&announcement).unwrap()["status"], "listening");
+    terminate(&child);
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(api_calls(&mock, before), [CREATE, ATTACH, DETACH, DELETE]);
+}
