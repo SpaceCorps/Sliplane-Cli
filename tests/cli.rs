@@ -2369,3 +2369,471 @@ fn the_probe_goes_direct_while_other_requests_use_the_proxy() {
     assert_eq!((count(&mock, "postgres/pg_1"), count(&mock, "me")), (gets + 1, probes + 1), "both requests happened");
     assert_eq!(hits.load(Ordering::SeqCst), 2, "the read went through the proxy; the address probe did not");
 }
+
+// ---------------------------------------------------------------------------------------------
+// postgres query / connect
+//
+// The first group needs nothing but this machine: the mock API, and fake database ports that
+// misbehave. The last test talks to a real PostgreSQL in Docker and is `#[ignore]`d; see its comment.
+
+const PGQ_PASSWORD: &str = "s3cr3t-Passw0rd-xyz";
+
+fn pgq_db(host: &str, port: u16, password: &str, allow: &[&str]) -> Value {
+    let list: Vec<Value> = allow.iter().enumerate().map(|(i, s)| entry(&format!("pgfw_{i}"), s, "")).collect();
+    json!({
+        "id": "pg_1", "name": "main", "status": "running", "ipAllowList": list,
+        "connection": {"host": host, "port": port, "database": "app", "user": "app", "password": password,
+                       "uri": format!("postgres://app:{password}@{host}:{port}/app")},
+    })
+}
+
+/// A mock API with one database, an account `work`, and the environment to run the CLI against it.
+fn pgq_env(db: Value) -> (Mock, Env) {
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, db)]);
+    let env = Env::new(&mock).with_account();
+    (mock, env)
+}
+
+struct Run {
+    code: i32,
+    out: Value,
+    err: Value,
+    /// Everything the command printed, both streams, for "this must never appear" checks.
+    raw: String,
+}
+
+/// `sliplane postgres <args> --postgres-id pg_1 -a work --json`, with optional stdin and extra environment.
+fn pgq(env: &Env, args: &[&str], stdin: Option<&str>, envs: &[(&str, &std::ffi::OsStr)]) -> Run {
+    use std::process::Stdio;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sliplane"));
+    cmd.arg("postgres")
+        .args(args)
+        .args(["--postgres-id", "pg_1", "-a", "work", "--json"])
+        .env("SLIPLANE_CONFIG_DIR", &env.dir)
+        .env("SLIPLANE_SECRET_STORE", "plaintext")
+        .env("SLIPLANE_API_URL", &env.api)
+        .env_remove("SLIPLANE_PG_CA_FILE")
+        .envs(envs.iter().copied())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    if let Some(text) = stdin {
+        child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    let parse = |b: &[u8]| {
+        let s = String::from_utf8_lossy(b);
+        let s =
+            s.lines().filter(|l| !l.starts_with("warning:") && !l.starts_with("note:")).collect::<Vec<_>>().join("\n");
+        serde_json::from_str(&s).unwrap_or(Value::Null)
+    };
+    Run {
+        code: out.status.code().unwrap(),
+        out: parse(&out.stdout),
+        err: parse(&out.stderr),
+        raw: format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
+    }
+}
+
+/// A TCP port that runs `behave` on each connection, and keeps what the client sent.
+fn pgq_fake(behave: fn(&mut std::net::TcpStream, &Mutex<Vec<u8>>)) -> (u16, Arc<Mutex<Vec<u8>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            behave(&mut stream, &seen2);
+        }
+    });
+    (port, seen)
+}
+
+/// Answers the SSL request with `N`, as a server without TLS does, then listens for anything else.
+fn pgq_no_tls(stream: &mut std::net::TcpStream, seen: &Mutex<Vec<u8>>) {
+    let mut request = [0u8; 8];
+    stream.read_exact(&mut request).unwrap();
+    seen.lock().unwrap().extend_from_slice(&request);
+    stream.write_all(b"N").unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+    seen.lock().unwrap().extend_from_slice(&rest);
+}
+
+/// Hangs up at once, which is what a firewall's reset looks like from the client.
+fn pgq_hang_up(_: &mut std::net::TcpStream, _: &Mutex<Vec<u8>>) {}
+
+#[test]
+fn postgres_query_checks_its_input_before_it_connects() {
+    let (mock, env) = pgq_env(pgq_db("127.0.0.1", 1, PGQ_PASSWORD, &["0.0.0.0/0"]));
+    let before = mock.requests().len();
+    let invalid = |args: &[&str], stdin: Option<&str>, want: &str| {
+        let r = pgq(&env, &[&["query"][..], args].concat(), stdin, &[]);
+        assert_eq!((r.code, r.err["code"].as_str()), (6, Some("invalid_input")), "{args:?}: {}", r.raw);
+        assert!(r.err["error"].as_str().unwrap().contains(want), "{args:?}: {}", r.raw);
+    };
+    invalid(&[], None, "Pass the SQL");
+    invalid(&["--sql", "   "], None, "empty");
+    invalid(&["--sql", "select 1", "--file", "x.sql"], None, "cannot be used with");
+    invalid(&["--file", "/no/such/dir/x.sql"], None, "Could not read");
+    invalid(&["--sql", "-"], Some("  \n"), "empty");
+    invalid(&["--sql", "select 1", "--timeout", "soon"], None, "--timeout takes a duration");
+    invalid(&["--sql", "select 1", "--timeout", "2d"], None, "at most 1d");
+    invalid(&["--sql", "select 1", "--max-rows", "0"], None, "max-rows");
+    // A NUL cannot travel in an argument, but it can arrive on stdin; that one is caught after the details are fetched.
+    invalid(&["--sql", "-"], Some("select 1\u{0}"), "NUL");
+    assert_eq!(mock.requests().len(), before + 1, "only the NUL case got as far as fetching the connection details");
+}
+
+#[test]
+fn postgres_query_wants_a_password_a_running_database_and_a_name_that_exists() {
+    // No secrets:read: the API blanks the password.
+    let (_mock, env) = pgq_env(pgq_db("127.0.0.1", 1, "", &["0.0.0.0/0"]));
+    let r = pgq(&env, &["query", "--sql", "select 1"], None, &[]);
+    assert_eq!((r.code, r.err["code"].as_str()), (3, Some("auth_required")), "{}", r.raw);
+    assert!(r.err["remediation"].as_str().unwrap().contains("Secrets: Read"), "{}", r.raw);
+
+    // Paused: no connection details at all.
+    let paused = json!({"id": "pg_1", "name": "main", "status": "paused", "ipAllowList": []});
+    let (_mock, env) = pgq_env(paused);
+    let r = pgq(&env, &["query", "--sql", "select 1"], None, &[]);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("status: paused"));
+    assert_eq!(
+        r.err["remediation"],
+        "sliplane postgres unpause --postgres-id pg_1 -a work, then wait for status running"
+    );
+
+    // A name is resolved like everywhere else (the database does not exist here, so the listing says so).
+    let mock = Mock::start(vec![me(), ("GET", "postgres", 200, json!([{"id": "pg_9", "name": "other"}]))]);
+    let env = Env::new(&mock).with_account();
+    let out = Command::new(env!("CARGO_BIN_EXE_sliplane"))
+        .args(["postgres", "query", "--postgres", "main", "--sql", "select 1", "-a", "work", "--json"])
+        .env("SLIPLANE_CONFIG_DIR", &env.dir)
+        .env("SLIPLANE_SECRET_STORE", "plaintext")
+        .env("SLIPLANE_API_URL", &env.api)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn postgres_query_never_sends_credentials_to_a_server_without_tls() {
+    let (port, seen) = pgq_fake(pgq_no_tls);
+    let (_mock, env) = pgq_env(pgq_db("127.0.0.1", port, PGQ_PASSWORD, &["0.0.0.0/0"]));
+    let r = pgq(&env, &["query", "--sql", "select 1"], None, &[]);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("does not offer TLS"), "{}", r.raw);
+    assert!(!r.raw.contains(PGQ_PASSWORD));
+    // All the server ever received was the 8-byte SSLRequest: length 8, code 80877103.
+    assert_eq!(*seen.lock().unwrap(), [0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f]);
+}
+
+#[test]
+fn postgres_query_points_at_the_allow_list_when_the_connection_dies() {
+    let (port, _) = pgq_fake(pgq_hang_up);
+    let (_mock, env) = pgq_env(pgq_db("127.0.0.1", port, PGQ_PASSWORD, &["203.0.113.0/24"]));
+    let r = pgq(&env, &["query", "--sql", "select 1"], None, &[]);
+    assert_eq!((r.code, r.err["code"].as_str()), (2, Some("network")), "{}", r.raw);
+    assert_eq!(
+        r.err["remediation"],
+        "If this machine's address is not on the IP allow list: sliplane postgres allowlist add --postgres-id pg_1 --my-ip --ipv4 -a work"
+    );
+    assert!(r.err["detail"].as_str().unwrap().contains("restricted to the addresses it lists"), "{}", r.raw);
+    assert!(!r.raw.contains(PGQ_PASSWORD));
+
+    // An allow list that lets everyone in is not the reason.
+    let (_mock, env) = pgq_env(pgq_db("127.0.0.1", port, PGQ_PASSWORD, &["0.0.0.0/0"]));
+    let r = pgq(&env, &["query", "--sql", "select 1"], None, &[]);
+    assert_eq!(r.code, 2, "{}", r.raw);
+    assert!(!r.err["remediation"].as_str().unwrap().contains("allowlist add"), "{}", r.raw);
+
+    // Nothing listening is a different problem with a different answer.
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let (_mock, env) = pgq_env(pgq_db("127.0.0.1", closed, PGQ_PASSWORD, &["203.0.113.0/24"]));
+    let r = pgq(&env, &["query", "--sql", "select 1"], None, &[]);
+    assert_eq!(r.code, 2, "{}", r.raw);
+    assert!(r.err["remediation"].as_str().unwrap().contains("paused or restarting"), "{}", r.raw);
+}
+
+#[test]
+fn postgres_connect_says_when_psql_is_missing_and_keeps_the_password_out_of_sight() {
+    let (_mock, env) = pgq_env(pgq_db("127.0.0.1", 1, PGQ_PASSWORD, &["0.0.0.0/0"]));
+    let empty = env.dir.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let r = pgq(&env, &["connect"], None, &[("PATH", empty.as_os_str())]);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("psql was not found"), "{}", r.raw);
+    assert!(r.err["remediation"].as_str().unwrap().contains("postgres query"), "{}", r.raw);
+    assert!(!r.raw.contains(PGQ_PASSWORD));
+}
+
+// --- against a real PostgreSQL ---------------------------------------------------------------
+
+/// A throwaway PostgreSQL in Docker, with TLS from a CA made on the spot (so the CLI's certificate
+/// checks are really exercised) and SCRAM passwords. Removed again on drop.
+struct PgContainer {
+    name: String,
+    port: u16,
+    ca: PathBuf,
+}
+
+fn docker(args: &[&str]) -> Output {
+    Command::new("docker")
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("this test needs Docker, and `docker` could not be run: {e}"))
+}
+
+impl PgContainer {
+    fn start(dir: &std::path::Path) -> PgContainer {
+        // `SLIPLANE_TEST_PG_IMAGE` picks another PostgreSQL; Sliplane's own default is 18.
+        let image = std::env::var("SLIPLANE_TEST_PG_IMAGE").unwrap_or_else(|_| "postgres:18".into());
+        let name = format!("sliplane-pgtest-{}", std::process::id());
+        // A CA, a server certificate for `localhost` signed by it, and the server started with both.
+        let script = "set -e; d=/var/lib/sliplane-tls; mkdir -p $d; cd $d; \
+            openssl req -x509 -newkey rsa:2048 -nodes -days 3 -keyout ca.key -out ca.pem -subj /CN=sliplane-test-ca \
+              -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign; \
+            openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj /CN=localhost; \
+            printf 'subjectAltName=DNS:localhost\\nbasicConstraints=CA:FALSE\\nextendedKeyUsage=serverAuth\\n' > ext.cnf; \
+            openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -out server.crt -extfile ext.cnf; \
+            chown postgres:postgres server.key server.crt; chmod 600 server.key; \
+            exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=$d/server.crt -c ssl_key_file=$d/server.key \
+              -c password_encryption=scram-sha-256";
+        let pg_password = format!("POSTGRES_PASSWORD={PGQ_PASSWORD}");
+        let started = docker(&[
+            "run",
+            "-d",
+            "--name",
+            &name,
+            "-e",
+            "POSTGRES_USER=app",
+            "-e",
+            &pg_password,
+            "-e",
+            "POSTGRES_DB=app",
+            "-p",
+            "127.0.0.1::5432",
+            "--entrypoint",
+            "sh",
+            &image,
+            "-c",
+            script,
+        ]);
+        assert!(started.status.success(), "docker run failed: {}", String::from_utf8_lossy(&started.stderr));
+        // From here on, Drop removes the container, whatever happens.
+        let mut pg = PgContainer { name, port: 0, ca: dir.join("ca.pem") };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            // `-h localhost`: the initialisation server only listens on a socket, so this is the real one.
+            if docker(&["exec", &pg.name, "pg_isready", "-h", "localhost", "-U", "app", "-d", "app"]).status.success() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "PostgreSQL did not come up");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let mapped = String::from_utf8(docker(&["port", &pg.name, "5432/tcp"]).stdout).unwrap();
+        pg.port = mapped.lines().next().and_then(|l| l.rsplit(':').next()).and_then(|p| p.trim().parse().ok()).unwrap();
+        let ca = docker(&["exec", &pg.name, "cat", "/var/lib/sliplane-tls/ca.pem"]);
+        assert!(ca.status.success());
+        std::fs::write(&pg.ca, ca.stdout).unwrap();
+        pg
+    }
+}
+
+impl Drop for PgContainer {
+    fn drop(&mut self) {
+        let _ = Command::new("docker").args(["rm", "-f", &self.name]).output();
+    }
+}
+
+/// Runs against a real PostgreSQL in Docker (`postgres:18`, or `SLIPLANE_TEST_PG_IMAGE`). Not part of
+/// `cargo test`, because CI has no Docker. Run it with:
+///
+///     cargo test --test cli postgres_query_against_a_real_postgres -- --ignored --nocapture
+///
+/// One test, not many, because starting the server takes seconds; the steps run in order and share
+/// the database (the table made with `--write` is read back later).
+#[test]
+#[ignore = "needs Docker: cargo test --test cli postgres_query_against_a_real_postgres -- --ignored"]
+fn postgres_query_against_a_real_postgres() {
+    let dir = std::env::temp_dir().join(format!("sliplane-pgq-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pg = PgContainer::start(&dir);
+    let ca = pg.ca.clone().into_os_string();
+    let trust: Vec<(&str, &std::ffi::OsStr)> = vec![("SLIPLANE_PG_CA_FILE", ca.as_os_str())];
+
+    let (_mock, env) = pgq_env(pgq_db("localhost", pg.port, PGQ_PASSWORD, &["0.0.0.0/0"]));
+    let every_output = std::cell::RefCell::new(Vec::new());
+    let q = |args: &[&str]| {
+        let r = pgq(&env, &[&["query"][..], args].concat(), None, &trust);
+        every_output.borrow_mut().push(r.raw.clone());
+        r
+    };
+
+    // 1. Values of many types, as data.
+    let r = q(&[
+        "--sql",
+        "select 1::int2 as i2, 2::int4 as i4, 9223372036854775807::int8 as i8, 1.5::float8 as f8, \
+        'NaN'::float8 as nan, 12345678901234567890.123456789::numeric as n, true as b, null::text as nul, \
+        '{\"a\":[1,{\"b\":null}]}'::jsonb as j, 'h\u{e9}llo'::text as t, '2024-01-02'::date as d, array[1,2]::int4[] as arr",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.raw);
+    assert_eq!(r.out["readOnly"], true);
+    let st = &r.out["statements"][0];
+    assert_eq!(
+        (st["commandTag"].as_str(), st["rowCount"].as_u64(), st["truncated"].as_bool()),
+        (Some("SELECT 1"), Some(1), Some(false))
+    );
+    let row = &st["rows"][0];
+    assert_eq!((row["i2"].as_i64(), row["i4"].as_i64(), row["i8"].as_i64()), (Some(1), Some(2), Some(i64::MAX)));
+    assert_eq!(row["f8"], 1.5);
+    assert_eq!(row["nan"], "NaN");
+    assert_eq!(row["n"], "12345678901234567890.123456789");
+    assert_eq!(row["b"], true);
+    assert!(row["nul"].is_null());
+    assert_eq!(row["j"], json!({"a": [1, {"b": null}]}));
+    assert_eq!(
+        (row["t"].as_str(), row["d"].as_str(), row["arr"].as_str()),
+        (Some("h\u{e9}llo"), Some("2024-01-02"), Some("{1,2}"))
+    );
+    assert_eq!(st["columns"][2], json!({"name": "i8", "type": "int8", "oid": 20}));
+    assert_eq!(st["columns"][5]["type"], "numeric");
+
+    // 2. An empty result is still a result; several statements are several results.
+    let r = q(&["--sql", "select 1 as x where false; select 'a' as y, 'b' as z"]);
+    assert_eq!(r.code, 0, "{}", r.raw);
+    assert_eq!(r.out["statements"][0]["rows"], json!([]));
+    assert_eq!(r.out["statements"][0]["columns"][0]["name"], "x");
+    assert_eq!(r.out["statements"][1]["rows"], json!([{"y": "a", "z": "b"}]));
+
+    // 3. Row cap.
+    let r = q(&["--sql", "select g from generate_series(1, 10) g", "--max-rows", "3"]);
+    let st = &r.out["statements"][0];
+    assert_eq!(
+        (st["rows"].as_array().unwrap().len(), st["rowCount"].as_u64(), st["truncated"].as_bool()),
+        (3, Some(10), Some(true)),
+        "{}",
+        r.raw
+    );
+
+    //    A big result under the default cap: everything is counted, a thousand rows are kept.
+    let r = q(&["--sql", "select g, repeat('x', 50) as pad from generate_series(1, 20000) g"]);
+    let st = &r.out["statements"][0];
+    assert_eq!(
+        (st["rows"].as_array().unwrap().len(), st["rowCount"].as_u64(), st["truncated"].as_bool()),
+        (1000, Some(20_000), Some(true))
+    );
+    assert_eq!(st["rows"][999]["g"], 1000);
+
+    // 3b. The server hanging up on us mid-query is an error with its SQLSTATE, not a hang or a panic.
+    let r = q(&["--sql", "select pg_terminate_backend(pg_backend_pid())"]);
+    assert_eq!(r.code, 1, "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("57P01"), "{}", r.raw);
+
+    // 4. Repeated column names do not overwrite each other.
+    let r = q(&["--sql", "select 1 as a, 2 as a"]);
+    let st = &r.out["statements"][0];
+    assert_eq!(st["rows"][0], json!({"a": 1, "a_2": 2}));
+    assert_eq!(st["columns"][1]["key"], "a_2");
+    assert!(st["warnings"][0].as_str().unwrap().contains("a_2"));
+
+    // 5. Read-only by default: a refusal that says how to get past it.
+    let r = q(&["--sql", "create table qt(id int, note text)"]);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("25006"), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("read-only transaction"), "{}", r.raw);
+    assert!(r.err["remediation"].as_str().unwrap().contains("--write"), "{}", r.raw);
+
+    // 6. --write allows it, several statements in one call.
+    let r = q(&[
+        "--write",
+        "--sql",
+        "create table qt(id int, note text); insert into qt values (1, 'a'), (2, null); select * from qt order by id",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.raw);
+    assert_eq!(r.out["readOnly"], false);
+    let tags: Vec<_> =
+        r.out["statements"].as_array().unwrap().iter().map(|s| s["commandTag"].as_str().unwrap().to_string()).collect();
+    assert_eq!(tags, ["CREATE TABLE", "INSERT 0 2", "SELECT 2"]);
+    assert_eq!(r.out["statements"][1]["rowCount"], 2);
+    assert_eq!(r.out["statements"][2]["rows"], json!([{"id": 1, "note": "a"}, {"id": 2, "note": null}]));
+
+    // 7. ...and read-only sessions still read it, but cannot insert.
+    let r = q(&["--sql", "select count(*) as n from qt"]);
+    assert_eq!(r.out["statements"][0]["rows"][0]["n"], 2, "{}", r.raw);
+    let r = q(&["--sql", "insert into qt values (3, 'c')"]);
+    assert_eq!(r.code, 1, "{}", r.raw);
+    assert!(r.err["remediation"].as_str().unwrap().contains("--write"));
+
+    // 8. A failing statement: SQLSTATE, position, which statement; and what came before it is rolled back.
+    let r = q(&["--write", "--sql", "insert into qt values (9, 'z'); select * from does_not_exist"]);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("42P01"), "{}", r.raw);
+    let detail = r.err["detail"].as_str().unwrap();
+    for want in ["severity: ERROR", "sqlstate: 42P01", "position: ", "statement: 2", "rolled back"] {
+        assert!(detail.contains(want), "{want} missing from {detail}");
+    }
+    let r = q(&["--sql", "select count(*) as n from qt where id = 9"]);
+    assert_eq!(
+        r.out["statements"][0]["rows"][0]["n"], 0,
+        "the insert before the failure must not have stuck: {}",
+        r.raw
+    );
+
+    // 9. Notices come back with their statement.
+    let r = q(&["--write", "--sql", "create table if not exists qt(id int)"]);
+    assert!(r.out["statements"][0]["notices"][0].as_str().unwrap().contains("already exists, skipping"), "{}", r.raw);
+
+    // 10. SQL from stdin and from a file.
+    let r = pgq(&env, &["query", "--sql", "-"], Some("select 42 as answer"), &trust);
+    assert_eq!(r.out["statements"][0]["rows"][0]["answer"], 42, "{}", r.raw);
+    let file = dir.join("q.sql");
+    std::fs::write(&file, "-- a comment first\nselect 43 as answer").unwrap();
+    let r = pgq(&env, &["query", "--file", file.to_str().unwrap()], None, &trust);
+    assert_eq!(r.out["statements"][0]["rows"][0]["answer"], 43, "{}", r.raw);
+
+    // 11. The statement timeout is enforced, and the error says which flag to raise.
+    let started = std::time::Instant::now();
+    let r = q(&["--sql", "select pg_sleep(20)", "--timeout", "1s"]);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("57014"), "{}", r.raw);
+    assert!(r.err["remediation"].as_str().unwrap().contains("--timeout"), "{}", r.raw);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
+
+    // 12. A syntax error is a SQL error like any other.
+    let r = q(&["--sql", "selec 1"]);
+    assert!(r.err["error"].as_str().unwrap().contains("42601"), "{}", r.raw);
+    assert!(r.err["detail"].as_str().unwrap().contains("position: 1"), "{}", r.raw);
+
+    // 13. A wrong password is refused by the server; neither password is printed.
+    let (_m, wrong) = pgq_env(pgq_db("localhost", pg.port, "not-the-password-0000", &["0.0.0.0/0"]));
+    let r = pgq(&wrong, &["query", "--sql", "select 1"], None, &trust);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("28P01"), "{}", r.raw);
+    assert!(!r.raw.contains("not-the-password-0000"), "{}", r.raw);
+    every_output.borrow_mut().push(r.raw);
+
+    // 14. Verification is on: a host name the certificate does not carry is refused,
+    let (_m, by_ip) = pgq_env(pgq_db("127.0.0.1", pg.port, PGQ_PASSWORD, &["0.0.0.0/0"]));
+    let r = pgq(&by_ip, &["query", "--sql", "select 1"], None, &trust);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("not valid for the host name '127.0.0.1'"), "{}", r.raw);
+    every_output.borrow_mut().push(r.raw);
+    //     and so is a certificate from an authority nobody told it to trust.
+    let r = pgq(&env, &["query", "--sql", "select 1"], None, &[]);
+    assert_eq!((r.code, r.err["code"].as_str()), (1, Some("error")), "{}", r.raw);
+    assert!(r.err["error"].as_str().unwrap().contains("authority this machine does not trust"), "{}", r.raw);
+    assert!(r.err["remediation"].as_str().unwrap().contains("SLIPLANE_PG_CA_FILE"), "{}", r.raw);
+    every_output.borrow_mut().push(r.raw);
+
+    // The password, in all of it.
+    for out in every_output.borrow().iter() {
+        assert!(!out.contains(PGQ_PASSWORD), "the password leaked into: {out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
