@@ -776,8 +776,8 @@ pub enum Postgres {
     Logs {
         #[command(flatten)]
         p: PgId,
-        /// Earliest log timestamp (RFC 3339), clamped to the 24h retention window
-        #[arg(long, value_name = "TIMESTAMP")]
+        /// Earliest log time: how long ago (30s, 5m, 2h, 1d) or an RFC 3339 timestamp, clamped to the 24h retention window
+        #[arg(long, value_name = "DURATION|TIMESTAMP")]
         since: Option<String>,
         /// Latest log timestamp (RFC 3339, default: now)
         #[arg(long, value_name = "TIMESTAMP")]
@@ -807,10 +807,66 @@ pub enum Postgres {
     Restore {
         #[command(flatten)]
         p: PgId,
-        /// The point in time to restore to (RFC 3339), within the restore window
+        /// The point in time to restore to (RFC 3339), within the restore window (default: the latest restorable point)
         #[arg(long)]
-        timestamp: String,
+        timestamp: Option<String>,
     },
+    /// See and change which source IPs may connect (read-modify-write on the IP allow list)
+    #[command(subcommand)]
+    Allowlist(Allowlist),
+}
+
+/// `--my-ip` and the IP family to detect it in.
+#[derive(Args)]
+pub struct MyIp {
+    /// Use this machine's public address as the Sliplane API sees it (a /32 for IPv4, a /128 for IPv6)
+    #[arg(long)]
+    pub my_ip: bool,
+    /// With --my-ip: the IPv4 address (default: the family the allow list's entries already use)
+    #[arg(long, requires = "my_ip", conflicts_with = "ipv6")]
+    pub ipv4: bool,
+    /// With --my-ip: the IPv6 address
+    #[arg(long, requires = "my_ip")]
+    pub ipv6: bool,
+}
+
+#[derive(Subcommand)]
+pub enum Allowlist {
+    /// Show the IP allow list, and whether the database is open, restricted or blocked
+    Show {
+        #[command(flatten)]
+        p: PgId,
+        #[command(flatten)]
+        me: MyIp,
+    },
+    /// Allow IP addresses or CIDR ranges, keeping every entry that is already there
+    Add {
+        #[command(flatten)]
+        p: PgId,
+        /// IP address or CIDR range to allow (repeatable); a bare address becomes a /32 or /128
+        #[arg(value_name = "IP_OR_CIDR")]
+        sources: Vec<String>,
+        #[command(flatten)]
+        me: MyIp,
+        /// Label for the entries this call adds
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+        /// Permit 0.0.0.0/0 or ::/0, which opens the database to the whole internet
+        #[arg(long)]
+        allow_open: bool,
+    },
+    /// Remove entries by address, CIDR range or rule id, keeping the rest
+    Remove {
+        #[command(flatten)]
+        p: PgId,
+        /// IP address, CIDR range or rule id (pgfw_...) to remove (repeatable)
+        #[arg(value_name = "IP_OR_CIDR_OR_ID")]
+        sources: Vec<String>,
+        #[command(flatten)]
+        me: MyIp,
+    },
+    /// Remove every entry: the database then refuses all public connections
+    Clear(PgId),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1092,6 +1148,10 @@ impl Postgres {
             | Postgres::Logs { p, .. }
             | Postgres::Metrics { p, .. }
             | Postgres::Restore { p, .. } => Some(p),
+            Postgres::Allowlist(Allowlist::Clear(p)) => Some(p),
+            Postgres::Allowlist(Allowlist::Show { p, .. } | Allowlist::Add { p, .. } | Allowlist::Remove { p, .. }) => {
+                Some(p)
+            }
         }
     }
 }

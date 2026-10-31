@@ -28,7 +28,12 @@ struct Mock {
 impl Mock {
     /// Routes are (method, path-with-query, status, body). Unmatched requests get a 404.
     fn start(routes: Vec<Route>) -> Mock {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Mock::start_on("127.0.0.1:0", routes)
+    }
+
+    /// `start`, on an address of your choosing (`[::1]:0` for an IPv6-only mock).
+    fn start_on(bind: &str, routes: Vec<Route>) -> Mock {
+        let listener = TcpListener::bind(bind).unwrap();
         let url = format!("http://{}/v0/", listener.local_addr().unwrap());
         let log = Arc::new(Mutex::new(Vec::new()));
         let log2 = log.clone();
@@ -72,7 +77,10 @@ impl Mock {
                     let nth = log.lock().unwrap().iter().filter(|r| r.method == method && r.path == path).count();
                     let (status, resp) = routes
                         .iter()
-                        .find(|(m, p, _, _)| *m == method && *p == path)
+                        // A route ending in `*` matches any path that starts with what is before it.
+                        .find(|(m, p, _, _)| {
+                            *m == method && (*p == path || p.strip_suffix('*').is_some_and(|pre| path.starts_with(pre)))
+                        })
                         .map(|(_, _, s, b)| (*s, b.clone()))
                         .unwrap_or((404, json!({"code": "not_found", "message": "no route"})));
                     // `{"__seq": [a, b, c]}` answers a, then b, then c for every call after.
@@ -80,10 +88,19 @@ impl Mock {
                         Some(seq) => seq[(nth - 1).min(seq.len() - 1)].clone(),
                         None => resp,
                     };
+                    // `{"__headers": {"Name": "value"}, "__body": ...}` sends those response headers
+                    // along with the body (an object with no `__body` has an empty one).
+                    let (resp, extra_headers) = match resp.get("__headers").and_then(Value::as_object) {
+                        Some(h) => (
+                            resp.get("__body").cloned().unwrap_or_else(|| json!({})),
+                            h.iter().map(|(k, v)| format!("{k}: {}\r\n", v.as_str().unwrap_or(""))).collect::<String>(),
+                        ),
+                        None => (resp, String::new()),
+                    };
                     let text = if status == 204 { String::new() } else { resp.to_string() };
                     let _ = write!(
                         stream,
-                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
                         text.len()
                     );
                 });
@@ -127,6 +144,20 @@ impl Env {
             .env("SLIPLANE_SECRET_STORE", "plaintext")
             .env("SLIPLANE_API_URL", &self.api)
             .env("SLIPLANE_PRESETS_URL", format!("{}presets", self.api))
+            .output()
+            .unwrap()
+    }
+
+    /// `run`, with more environment variables, and none of the ambient `NO_PROXY` ones.
+    fn run_with(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_sliplane"))
+            .args(args)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .env("SLIPLANE_CONFIG_DIR", &self.dir)
+            .env("SLIPLANE_SECRET_STORE", "plaintext")
+            .env("SLIPLANE_API_URL", &self.api)
+            .envs(envs.iter().copied())
             .output()
             .unwrap()
     }
@@ -1682,6 +1713,661 @@ fn services_list_takes_a_project_by_name() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(out[0]["id"], "s3");
     assert_eq!(mock.last("GET").path, "projects/p2/services");
+}
+
+// ---------------------------------------------------------------------------------------------
+// postgres allowlist, logs --since, and restore's default point
+
+const PG_PASSWORD: &str = "pg-secret-pw";
+
+fn pg_db(list: Value) -> Value {
+    json!({
+        "id": "pg_1", "name": "main", "status": "running", "ipAllowList": list,
+        "connection": {"host": "pg.example", "port": 5432, "database": "d", "user": "u", "password": PG_PASSWORD,
+                       "uri": format!("postgres://u:{PG_PASSWORD}@pg.example:5432/d")},
+    })
+}
+
+fn entry(id: &str, source: &str, description: &str) -> Value {
+    let mut e = json!({"id": id, "source": source, "createdAt": "2026-10-01T00:00:00Z"});
+    if !description.is_empty() {
+        e["description"] = json!(description);
+    }
+    e
+}
+
+/// `me`, which also reports the caller's address in the `Sliplane-Client-IP` header.
+fn me_ip(ip: &str) -> Route {
+    (
+        "GET",
+        "me",
+        200,
+        json!({"__headers": {"Sliplane-Client-IP": ip},
+               "__body": {"authType": "apikey", "tokenType": "rw", "organizationId": "org_1",
+                          "user": {"email": "dev@example.com"}}}),
+    )
+}
+
+fn allowlist(env: &Env, args: &[&str]) -> (i32, Value, Value) {
+    let mut all = vec!["postgres", "allowlist"];
+    all.extend_from_slice(args);
+    all.extend(["--postgres-id", "pg_1", "-a", "work"]);
+    env.json(&all)
+}
+
+fn patches(mock: &Mock) -> Vec<Recorded> {
+    mock.requests().into_iter().filter(|r| r.method == "PATCH").collect()
+}
+
+fn sources(list: &Value) -> Vec<String> {
+    list.as_array().unwrap().iter().map(|e| e["source"].as_str().unwrap().to_string()).collect()
+}
+
+fn count(mock: &Mock, path: &str) -> usize {
+    paths(mock, "GET").iter().filter(|p| *p == path).count()
+}
+
+#[test]
+fn allowlist_show_says_what_the_list_means_and_reads_the_callers_address() {
+    let list = json!([entry("pgfw_1", "10.0.0.0/8", "vpn"), entry("pgfw_2", "203.0.113.7/32", "")]);
+    let mock = Mock::start(vec![me_ip("203.0.113.7"), ("GET", "postgres/pg_1", 200, pg_db(list.clone()))]);
+    let env = Env::new(&mock).with_account();
+
+    let raw = env.run(&["postgres", "allowlist", "show", "--postgres-id", "pg_1", "-a", "work", "--json"]);
+    let text = String::from_utf8(raw.stdout).unwrap();
+    assert!(!text.contains(PG_PASSWORD), "the allow list output must not carry the connection password: {text}");
+    let (code, out, err) = allowlist(&env, &["show"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["postgresId"], "pg_1");
+    assert_eq!(out["name"], "main");
+    assert_eq!(out["access"], "restricted");
+    assert_eq!(out["ipAllowList"], list);
+    assert!(out.get("myIp").is_none() && out.get("warnings").is_none() && out.get("status").is_none());
+
+    // --my-ip: the address comes from the Sliplane-Client-IP header of `me`, and the key goes with that request.
+    let before = count(&mock, "me");
+    let (code, out, err) = allowlist(&env, &["show", "--my-ip"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["myIp"], "203.0.113.7");
+    assert_eq!(out["myIpAllowed"], true);
+    assert_eq!(count(&mock, "me"), before + 1);
+    let probe = mock.requests().into_iter().rev().find(|r| r.path == "me").unwrap();
+    assert_eq!(probe.headers.iter().find(|(k, _)| k == "authorization").unwrap().1, "Bearer sl_test");
+    assert!(patches(&mock).is_empty(), "show changes nothing");
+
+    // An address the list does not cover.
+    let mock = Mock::start(vec![me_ip("198.51.100.9"), ("GET", "postgres/pg_1", 200, pg_db(list))]);
+    let env = Env::new(&mock).with_account();
+    let (_, out, _) = allowlist(&env, &["show", "--my-ip"]);
+    assert_eq!(out["myIp"], "198.51.100.9");
+    assert_eq!(out["myIpAllowed"], false);
+}
+
+#[test]
+fn allowlist_show_flags_open_and_blocked_databases() {
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres/pg_1", 200, pg_db(json!([entry("pgfw_1", "0.0.0.0/0", ""), entry("pgfw_2", "::/0", "")]))),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, _) = allowlist(&env, &["show"]);
+    assert_eq!(code, 0);
+    assert_eq!(out["access"], "open");
+    let warnings = out["warnings"].as_array().unwrap();
+    assert!(warnings[0].as_str().unwrap().contains("every IPv4 address"), "{warnings:?}");
+    assert!(warnings[1].as_str().unwrap().contains("every IPv6 address"), "{warnings:?}");
+
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, pg_db(json!([])))]);
+    let env = Env::new(&mock).with_account();
+    let (_, out, _) = allowlist(&env, &["show"]);
+    assert_eq!(out["access"], "blocked");
+    assert!(out["warnings"][0].as_str().unwrap().contains("refuses every public connection"));
+}
+
+#[test]
+fn allowlist_add_keeps_unrelated_entries_and_appends_without_duplicates() {
+    let before = json!([entry("pgfw_1", "10.0.0.0/8", "vpn"), entry("pgfw_2", "192.0.2.5/24", "")]);
+    let after = json!([
+        entry("pgfw_1", "10.0.0.0/8", "vpn"),
+        entry("pgfw_2", "192.0.2.5/24", ""),
+        entry("pgfw_3", "203.0.113.7/32", ""),
+        entry("pgfw_4", "198.51.100.0/24", ""),
+    ]);
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres/pg_1", 200, pg_db(before)),
+        ("PATCH", "postgres/pg_1", 200, pg_db(after.clone())),
+    ]);
+    let env = Env::new(&mock).with_account();
+
+    // 10.9.9.9/8 is the vpn range again, and 203.0.113.7 twice is once; a bare address is a host range.
+    let (code, out, err) = allowlist(&env, &["add", "203.0.113.7", "198.51.100.77/24", "203.0.113.7/32", "10.9.9.9/8"]);
+    assert_eq!(code, 0, "{err}");
+    let sent = patches(&mock);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].path, "postgres/pg_1");
+    assert_eq!(
+        sent[0].body.clone().unwrap(),
+        json!({"ipAllowList": [
+            {"source": "10.0.0.0/8", "description": "vpn"},
+            {"source": "192.0.2.5/24"},
+            {"source": "203.0.113.7/32"},
+            {"source": "198.51.100.0/24"},
+        ]}),
+        "the whole list goes back, in order, with what was there untouched and the new ones last"
+    );
+    assert_eq!(out["status"], "updated");
+    assert_eq!(out["added"], json!(["203.0.113.7/32", "198.51.100.0/24"]));
+    assert_eq!(out["ipAllowList"], after, "the list printed is the one the API answered with");
+    assert_eq!(out["access"], "restricted");
+}
+
+#[test]
+fn allowlist_add_labels_and_does_nothing_when_there_is_nothing_to_do() {
+    let list = json!([entry("pgfw_1", "10.0.0.0/8", "vpn")]);
+    let relabeled = json!([entry("pgfw_1", "10.0.0.0/8", "office"), entry("pgfw_9", "192.0.2.1/32", "office")]);
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres/pg_1", 200, pg_db(list.clone())),
+        ("PATCH", "postgres/pg_1", 200, pg_db(relabeled)),
+    ]);
+    let env = Env::new(&mock).with_account();
+
+    let (code, out, err) = allowlist(&env, &["add", "10.1.1.1/8"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "unchanged");
+    assert_eq!(out["ipAllowList"], list);
+    assert!(patches(&mock).is_empty(), "an entry that is already there is not written again");
+
+    let (code, out, err) = allowlist(&env, &["add", "10.0.0.0/8", "192.0.2.1", "--description", "office"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        patches(&mock)[0].body.clone().unwrap(),
+        json!({"ipAllowList": [
+            {"source": "10.0.0.0/8", "description": "office"},
+            {"source": "192.0.2.1/32", "description": "office"},
+        ]})
+    );
+    assert_eq!(out["added"], json!(["192.0.2.1/32"]));
+    assert_eq!(out["relabeled"], json!(["10.0.0.0/8"]));
+}
+
+#[test]
+fn allowlist_add_needs_something_to_add_and_valid_addresses() {
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, pg_db(json!([])))]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = allowlist(&env, &["add"]);
+    assert_eq!((code, err["code"].as_str()), (6, Some("invalid_input")));
+    for bad in ["203.0.113.256", "10.0.0.0/33", "example.com", "10.0.0.0/"] {
+        let (code, _, err) = allowlist(&env, &["add", "203.0.113.7", bad]);
+        assert_eq!(code, 6, "{bad}");
+        assert!(err["error"].as_str().unwrap().contains(bad), "{err}");
+    }
+    assert_eq!(count(&mock, "postgres/pg_1"), 0, "nothing is read for input that cannot be valid");
+    assert!(patches(&mock).is_empty());
+}
+
+#[test]
+fn allowlist_add_refuses_to_open_the_database_to_the_world_without_allow_open() {
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres/pg_1", 200, pg_db(json!([entry("pgfw_1", "10.0.0.0/8", "")]))),
+        (
+            "PATCH",
+            "postgres/pg_1",
+            200,
+            pg_db(json!([entry("pgfw_1", "10.0.0.0/8", ""), entry("pgfw_2", "0.0.0.0/0", "")])),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+
+    // However it is written, a /0 is the whole internet; the refusal comes before anything is read or written.
+    for open in ["0.0.0.0/0", "::/0", "1.2.3.4/0", "::0/0"] {
+        let (code, _, err) = allowlist(&env, &["add", "203.0.113.7", open]);
+        assert_eq!((code, err["code"].as_str()), (6, Some("invalid_input")), "{open}");
+        assert!(err["error"].as_str().unwrap().contains("whole internet"), "{err}");
+        assert!(err["remediation"].as_str().unwrap().contains("--allow-open"), "{err}");
+    }
+    assert_eq!(count(&mock, "postgres/pg_1"), 0);
+    assert!(patches(&mock).is_empty());
+
+    let (code, out, err) = allowlist(&env, &["add", "0.0.0.0/0", "--allow-open"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        patches(&mock)[0].body.clone().unwrap(),
+        json!({"ipAllowList": [{"source": "10.0.0.0/8"}, {"source": "0.0.0.0/0"}]})
+    );
+    assert_eq!(out["access"], "open");
+    assert!(out["warnings"][0].as_str().unwrap().contains("whole internet"), "{out}");
+}
+
+#[test]
+fn allowlist_add_my_ip_follows_the_lists_family_and_says_so() {
+    let mock = Mock::start(vec![
+        me_ip("203.0.113.7"),
+        ("GET", "postgres/pg_1", 200, pg_db(json!([entry("pgfw_1", "10.0.0.0/8", "")]))),
+        (
+            "PATCH",
+            "postgres/pg_1",
+            200,
+            pg_db(json!([entry("pgfw_1", "10.0.0.0/8", ""), entry("pgfw_2", "203.0.113.7/32", "laptop")])),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let out = env.run(&[
+        "postgres",
+        "allowlist",
+        "add",
+        "--my-ip",
+        "--description",
+        "laptop",
+        "--postgres-id",
+        "pg_1",
+        "-a",
+        "work",
+        "--json",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("note: --my-ip is the IPv4 address, because every entry on the allow list is IPv4"),
+        "{stderr}"
+    );
+    assert_eq!(
+        patches(&mock)[0].body.clone().unwrap(),
+        json!({"ipAllowList": [{"source": "10.0.0.0/8"}, {"source": "203.0.113.7/32", "description": "laptop"}]})
+    );
+}
+
+#[test]
+fn allowlist_my_ip_needs_a_family_when_the_list_gives_none() {
+    for list in [json!([]), json!([entry("pgfw_1", "10.0.0.0/8", ""), entry("pgfw_2", "2001:db8::/32", "")])] {
+        let mock = Mock::start(vec![
+            me_ip("203.0.113.7"),
+            ("GET", "postgres/pg_1", 200, pg_db(list)),
+            ("PATCH", "postgres/pg_1", 200, pg_db(json!([entry("pgfw_9", "203.0.113.7/32", "")]))),
+        ]);
+        let env = Env::new(&mock).with_account();
+        let before = count(&mock, "me");
+        let (code, _, err) = allowlist(&env, &["add", "--my-ip"]);
+        assert_eq!((code, err["code"].as_str()), (6, Some("invalid_input")));
+        assert!(err["remediation"].as_str().unwrap().contains("--ipv4"), "{err}");
+        assert!(patches(&mock).is_empty());
+        assert_eq!(count(&mock, "me"), before, "no address is guessed at when the family is unknown");
+
+        let (code, _, err) = allowlist(&env, &["add", "--my-ip", "--ipv4"]);
+        assert_eq!(code, 0, "{err}");
+        let sent = patches(&mock)[0].body.clone().unwrap();
+        assert!(sources(&sent["ipAllowList"]).contains(&"203.0.113.7/32".to_string()), "{sent}");
+    }
+}
+
+#[test]
+fn allowlist_family_flags_are_checked_by_the_parser() {
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock).with_account();
+    for args in [&["add", "10.0.0.1", "--ipv4"][..], &["add", "--my-ip", "--ipv4", "--ipv6"], &["show", "--ipv6"]] {
+        let (code, _, err) = allowlist(&env, args);
+        assert_eq!((code, err["code"].as_str()), (6, Some("invalid_input")), "{args:?}");
+    }
+}
+
+#[test]
+fn allowlist_my_ip_fails_clearly_when_the_address_cannot_be_had() {
+    let list = pg_db(json!([entry("pgfw_1", "10.0.0.0/8", "")]));
+    // The mock listens on IPv4 only, so an IPv6 probe has nothing to connect to: the family really is forced.
+    let mock = Mock::start(vec![me_ip("203.0.113.7"), ("GET", "postgres/pg_1", 200, list.clone())]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = allowlist(&env, &["add", "--my-ip", "--ipv6"]);
+    assert_eq!((code, err["code"].as_str()), (2, Some("network")), "{err}");
+    assert!(err["error"].as_str().unwrap().contains("over IPv6"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("--ipv4"), "{err}");
+    assert!(patches(&mock).is_empty());
+
+    // An answer in the wrong family, or with no address, is not trusted either.
+    for (header, wanted) in [("2001:db8::7", "answered"), ("", "did not report"), ("not-an-ip", "did not report")] {
+        let mock = Mock::start(vec![me_ip(header), ("GET", "postgres/pg_1", 200, list.clone())]);
+        let env = Env::new(&mock).with_account();
+        let (code, _, err) = allowlist(&env, &["add", "--my-ip", "--ipv4"]);
+        assert_eq!(code, 1, "{header:?}: {err}");
+        assert!(err["error"].as_str().unwrap().contains(wanted), "{header:?}: {err}");
+        assert!(patches(&mock).is_empty());
+    }
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, list)]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = allowlist(&env, &["add", "--my-ip", "--ipv4"]);
+    assert_eq!(code, 1);
+    assert!(err["error"].as_str().unwrap().contains("did not report"), "{err}");
+}
+
+#[test]
+fn allowlist_remove_takes_ranges_ids_and_this_machine_and_keeps_the_rest() {
+    let before = json!([
+        entry("pgfw_1", "10.0.0.0/8", "vpn"),
+        entry("pgfw_2", "203.0.113.7/32", "me"),
+        entry("pgfw_3", "2001:db8::/32", ""),
+        entry("pgfw_4", "192.0.2.0/24", "office"),
+    ]);
+    let after = json!([entry("pgfw_1", "10.0.0.0/8", "vpn")]);
+    let mock = Mock::start(vec![
+        me_ip("203.0.113.7"),
+        ("GET", "postgres/pg_1", 200, pg_db(before)),
+        ("PATCH", "postgres/pg_1", 200, pg_db(after.clone())),
+    ]);
+    let env = Env::new(&mock).with_account();
+
+    // By range, by id, and by --my-ip, together.
+    let (code, out, err) = allowlist(&env, &["remove", "192.0.2.0/24", "pgfw_3", "--my-ip", "--ipv4"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        patches(&mock)[0].body.clone().unwrap(),
+        json!({"ipAllowList": [{"source": "10.0.0.0/8", "description": "vpn"}]})
+    );
+    assert_eq!(out["status"], "updated");
+    assert_eq!(sources(&out["removed"]), ["203.0.113.7/32", "2001:db8::/32", "192.0.2.0/24"]);
+    assert_eq!(out["removed"][0]["description"], "me");
+    assert_eq!(out["ipAllowList"], after);
+
+    // A bare address names its host range.
+    let (code, _, err) = allowlist(&env, &["remove", "203.0.113.7"]);
+    assert_eq!(code, 0, "{err}");
+}
+
+#[test]
+fn allowlist_remove_names_what_it_could_not_find_and_writes_nothing() {
+    let mock = Mock::start(vec![
+        me(),
+        (
+            "GET",
+            "postgres/pg_1",
+            200,
+            pg_db(json!([entry("pgfw_1", "10.0.0.0/8", ""), entry("pgfw_2", "192.0.2.1/32", "")])),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = allowlist(&env, &["remove", "192.0.2.1", "10.0.0.0/16", "pgfw_9"]);
+    assert_eq!((code, err["code"].as_str()), (4, Some("not_found")));
+    let message = err["error"].as_str().unwrap();
+    assert!(
+        message.contains("10.0.0.0/16") && message.contains("pgfw_9") && !message.contains("192.0.2.1"),
+        "{message}"
+    );
+    assert!(err["detail"].as_str().unwrap().contains("10.0.0.0/8 (pgfw_1)"), "{err}");
+    assert!(patches(&mock).is_empty(), "one unmatched target stops the whole removal");
+    assert_eq!(allowlist(&env, &["remove"]).0, 6);
+}
+
+#[test]
+fn allowlist_remove_will_not_empty_the_list_by_accident() {
+    let mock = Mock::start(vec![
+        me(),
+        (
+            "GET",
+            "postgres/pg_1",
+            200,
+            pg_db(json!([entry("pgfw_1", "10.0.0.0/8", ""), entry("pgfw_2", "192.0.2.1/32", "")])),
+        ),
+        ("PATCH", "postgres/pg_1", 200, pg_db(json!([]))),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = allowlist(&env, &["remove", "10.0.0.0/8", "pgfw_2"]);
+    assert_eq!((code, err["code"].as_str()), (6, Some("invalid_input")));
+    assert!(err["error"].as_str().unwrap().contains("last entry"), "{err}");
+    assert_eq!(err["remediation"], "sliplane postgres allowlist clear --postgres-id pg_1 -a work");
+    assert!(patches(&mock).is_empty());
+}
+
+#[test]
+fn allowlist_clear_blocks_everyone_and_keeps_a_record() {
+    let before = json!([entry("pgfw_1", "10.0.0.0/8", "vpn"), entry("pgfw_2", "203.0.113.7/32", "")]);
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres/pg_1", 200, pg_db(before)),
+        ("PATCH", "postgres/pg_1", 200, pg_db(json!([]))),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = allowlist(&env, &["clear"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(patches(&mock)[0].body.clone().unwrap(), json!({"ipAllowList": []}));
+    assert_eq!(out["status"], "updated");
+    assert_eq!(out["access"], "blocked");
+    assert_eq!(out["ipAllowList"], json!([]));
+    assert!(out["warnings"][0].as_str().unwrap().contains("refuses every public connection"), "{out}");
+    assert_eq!(sources(&out["removed"]), ["10.0.0.0/8", "203.0.113.7/32"]);
+    assert_eq!(out["removed"][0]["description"], "vpn");
+    assert_eq!(out["undo"], "sliplane postgres allowlist add --postgres-id pg_1 10.0.0.0/8 203.0.113.7/32 -a work");
+
+    // Already empty: nothing to write.
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, pg_db(json!([])))]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, _) = allowlist(&env, &["clear"]);
+    assert_eq!(code, 0);
+    assert_eq!(out["status"], "unchanged");
+    assert_eq!(out["access"], "blocked");
+    assert!(patches(&mock).is_empty());
+}
+
+#[test]
+fn allowlist_never_edits_a_list_it_could_not_see() {
+    // Writing back only the new entry would replace, and so delete, whatever the API did not show.
+    let mut db = pg_db(json!([]));
+    db.as_object_mut().unwrap().remove("ipAllowList");
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, db), ("PATCH", "postgres/pg_1", 200, json!({}))]);
+    let env = Env::new(&mock).with_account();
+    for args in [&["add", "203.0.113.7"][..], &["remove", "203.0.113.7"], &["clear"], &["show"]] {
+        let (code, _, err) = allowlist(&env, args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(err["error"].as_str().unwrap().contains("no ipAllowList"), "{err}");
+    }
+    assert!(patches(&mock).is_empty());
+}
+
+#[test]
+fn allowlist_takes_the_database_by_name() {
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres", 200, json!([{"id": "pg_1", "name": "main"}])),
+        ("GET", "postgres/pg_1", 200, pg_db(json!([entry("pgfw_1", "10.0.0.0/8", "")]))),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["postgres", "allowlist", "show", "--postgres", "main", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["postgresId"], "pg_1");
+    assert_eq!(env.json(&["postgres", "allowlist", "show", "-a", "work"]).0, 6, "a database has to be named");
+}
+
+/// Seconds since the epoch for `2026-10-31T12:00:00Z`.
+fn epoch(ts: &str) -> i64 {
+    let n = |a: usize, b: usize| ts[a..b].parse::<i64>().unwrap();
+    let (y, m, d) = (n(0, 4), n(5, 7), n(8, 10));
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    days * 86_400 + n(11, 13) * 3600 + n(14, 16) * 60 + n(17, 19)
+}
+
+#[test]
+fn postgres_logs_since_takes_a_duration_or_a_timestamp() {
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1/logs*", 200, json!([{"message": "ready"}]))]);
+    let env = Env::new(&mock).with_account();
+    let logs = |args: &[&str]| {
+        let mut all = vec!["postgres", "logs", "--postgres-id", "pg_1", "-a", "work"];
+        all.extend_from_slice(args);
+        env.json(&all)
+    };
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let (code, out, err) = logs(&["--since", "30m"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out[0]["message"], "ready");
+    let path = mock.last("GET").path;
+    let since = path.strip_prefix("postgres/pg_1/logs?since=").unwrap_or_else(|| panic!("{path}")).replace("%3A", ":");
+    assert!((epoch(&since) - (now - 1800)).abs() <= 10, "30m ago is {since}, now is {now}");
+
+    // A timestamp is passed on as the instant it names, in UTC.
+    let (code, _, err) =
+        logs(&["--since", "2026-10-31T12:00:00+02:00", "--until", "2026-10-31T11:00:00Z", "--limit", "5"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        mock.last("GET").path,
+        "postgres/pg_1/logs?since=2026-10-31T10%3A00%3A00Z&until=2026-10-31T11%3A00%3A00Z&limit=5"
+    );
+    assert_eq!(logs(&[]).0, 0);
+    assert_eq!(mock.last("GET").path, "postgres/pg_1/logs", "no flags, no query");
+
+    let requests = mock.requests().len();
+    let (code, _, err) = logs(&["--since", "yesterday"]);
+    assert_eq!((code, err["code"].as_str()), (6, Some("invalid_input")));
+    assert!(err["error"].as_str().unwrap().contains("neither a duration"), "{err}");
+    assert_eq!(mock.requests().len(), requests, "a bad --since is refused before anything is requested");
+}
+
+#[test]
+fn postgres_restore_defaults_to_the_latest_restorable_point() {
+    let window = json!({"min": "2026-10-30T10:00:00Z", "max": "2026-10-31T09:59:30Z"});
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres/pg_1/restore", 200, window),
+        ("POST", "postgres/pg_1/restore", 202, json!({"id": "pg_2", "name": "main-restore"})),
+    ]);
+    let env = Env::new(&mock).with_account();
+
+    let out = env.run(&["postgres", "restore", "--postgres-id", "pg_1", "-a", "work", "--json"]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(mock.last("POST").body.unwrap(), json!({"timestamp": "2026-10-31T09:59:30Z"}));
+    assert!(stderr.contains("latest restorable point, 2026-10-31T09:59:30Z"), "{stderr}");
+    assert_eq!(count(&mock, "postgres/pg_1/restore"), 1);
+
+    // An explicit point is used as given, without asking for the window.
+    let (code, out, err) = env.json(&[
+        "postgres",
+        "restore",
+        "--postgres-id",
+        "pg_1",
+        "--timestamp",
+        "2026-10-30T12:00:00Z",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("POST").body.unwrap(), json!({"timestamp": "2026-10-30T12:00:00Z"}));
+    assert_eq!(out["id"], "pg_2");
+    assert_eq!(count(&mock, "postgres/pg_1/restore"), 1);
+
+    // A window with no latest point is an error, not a guess.
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres/pg_1/restore", 200, json!({})),
+        ("POST", "postgres/pg_1/restore", 202, json!({})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["postgres", "restore", "--postgres-id", "pg_1", "-a", "work"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("--timestamp"), "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "POST"));
+}
+
+#[test]
+fn the_probe_connects_over_the_family_it_was_asked_for() {
+    // `[::1]` is a literal address, so the only thing that can make `--ipv4` fail against it is the
+    // family filter. Where the machine has no IPv6 loopback (some CI containers) there is no mock to run.
+    if TcpListener::bind("[::1]:0").is_err() {
+        eprintln!("no IPv6 loopback here; skipping");
+        return;
+    }
+    let routes = |ip: &str| -> Vec<Route> {
+        vec![me_ip(ip), ("GET", "postgres/pg_1", 200, pg_db(json!([entry("pgfw_1", "2001:db8::/32", "")])))]
+    };
+    let v6 = Mock::start_on("[::1]:0", routes("2001:db8::7"));
+    let env = Env::new(&v6).with_account();
+
+    let (code, out, err) = allowlist(&env, &["show", "--my-ip", "--ipv6"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["myIp"], "2001:db8::7");
+    assert_eq!(out["myIpAllowed"], true);
+
+    // The family of the list is followed when nothing is said.
+    let raw = env.run(&["postgres", "allowlist", "show", "--my-ip", "--postgres-id", "pg_1", "-a", "work", "--json"]);
+    assert_eq!(raw.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&raw.stderr).contains("note: --my-ip is the IPv6 address"));
+
+    let (code, _, err) = allowlist(&env, &["show", "--my-ip", "--ipv4"]);
+    assert_eq!(
+        (code, err["code"].as_str()),
+        (2, Some("network")),
+        "an IPv4 probe cannot reach an IPv6-only server: {err}"
+    );
+    assert!(err["error"].as_str().unwrap().contains("over IPv4"), "{err}");
+
+    // And the other way round: an IPv4-only server is out of reach of an IPv6 probe.
+    let v4 = Mock::start(routes("203.0.113.7"));
+    let env = Env::new(&v4).with_account();
+    assert_eq!(allowlist(&env, &["show", "--my-ip", "--ipv4"]).0, 0);
+    assert_eq!(allowlist(&env, &["show", "--my-ip", "--ipv6"]).0, 2);
+}
+
+/// An HTTP CONNECT proxy that tunnels to wherever it is asked and counts the tunnels.
+fn connect_proxy(hits: Arc<AtomicUsize>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for client in listener.incoming() {
+            let Ok(mut client) = client else { continue };
+            hits.fetch_add(1, Ordering::SeqCst);
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(client.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let target = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let Ok(upstream) = std::net::TcpStream::connect(&target) else { return };
+                write!(client, "HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
+                let (mut from_upstream, mut to_upstream) = (upstream.try_clone().unwrap(), upstream);
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut from_upstream, &mut client);
+                });
+                let _ = std::io::copy(&mut reader, &mut to_upstream);
+            });
+        }
+    });
+    url
+}
+
+#[test]
+fn the_probe_goes_direct_while_other_requests_use_the_proxy() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let proxy = connect_proxy(hits.clone());
+    let mock = Mock::start(vec![
+        me_ip("203.0.113.7"),
+        ("GET", "postgres/pg_1", 200, pg_db(json!([entry("pgfw_1", "203.0.113.0/24", "")]))),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let via_proxy: Vec<(&str, &str)> = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY"]
+        .into_iter()
+        .map(|k| (k, proxy.as_str()))
+        .collect();
+
+    // Control: an ordinary request goes through the proxy, so the setting is live and the count means something.
+    let out = env.run_with(&["postgres", "get", "--postgres-id", "pg_1", "-a", "work", "--json"], &via_proxy);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "an ordinary request should have used the proxy");
+
+    // This command makes two requests to the mock: the allow-list read, which uses the proxy (one more tunnel),
+    // and the address probe, which must not.
+    let (gets, probes) = (count(&mock, "postgres/pg_1"), count(&mock, "me"));
+    let args = ["postgres", "allowlist", "show", "--postgres-id", "pg_1", "--my-ip", "--ipv4", "-a", "work", "--json"];
+    let out = env.run_with(&args, &via_proxy);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!((count(&mock, "postgres/pg_1"), count(&mock, "me")), (gets + 1, probes + 1), "both requests happened");
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "the read went through the proxy; the address probe did not");
 }
 
 // ---------------------------------------------------------------------------------------------
