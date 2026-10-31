@@ -51,6 +51,7 @@ src/
     services.rs    services *, including the create/update logic
     presets.rs     presets list|show|deploy
     logs.rs        services logs --follow: the poll loop and its dedupe
+    postgres.rs    postgres allowlist (and its source-IP probe), logs --since, restore's default point
     wait.rs        --wait: poll events until a deploy has an outcome
   presets.rs       the preset catalog: fetch, validate, generate secrets, turn a preset into a request
   timeparse.rs     durations (30m) and RFC 3339, without a date-time crate

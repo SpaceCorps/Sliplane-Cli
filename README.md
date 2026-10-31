@@ -135,7 +135,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 |:---|:---|
 | `sliplane services list --project-id <id>` | List services within a project |
 | `sliplane services get --project-id <p> --service-id <s>` | Fetch detailed service configuration |
-| `sliplane services create --project-id <p> (--image <img> \| --repo <r>)` | Deploy a new container service |
+| `sliplane services create --project-id <p> (--image <img> \| --repo <r>)` | Deploy a new container service. Docker Hub shorthand is expanded (`nginx` is `docker.io/library/nginx:latest`, `user/app` is `docker.io/user/app:latest`); a reference with a registry host is sent as written |
 | `sliplane services update --project-id <p> --service-id <s>` | Update service deployment settings (see safeguards below) |
 | `sliplane services deploy --project-id <p> --service-id <s> [--wait]` | Trigger immediate redeployment; `--wait` blocks until it succeeds or fails |
 | `sliplane services logs --project-id <p> --service-id <s> [--since 30m] [--to <ts>]` | Read container logs (paginated, 500 lines per call) |
@@ -148,6 +148,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 | `sliplane services attach-volume --project-id <p> --service-id <s> --volume <id-or-name>:/path` | Mount a volume and redeploy |
 | `sliplane services update-volume --project-id <p> --service-id <s> --volume-id <v> --mount-path /path` | Change a mount path and redeploy |
 | `sliplane services detach-volume --project-id <p> --service-id <s> --volume-id <v>` | Unmount a volume and redeploy (the data is kept) |
+| `sliplane services create\|update … --env-file <path> --secret-env-file <path>` | Read plain / secret variables from dotenv files (repeatable; also on `presets deploy`). `KEY=VALUE`, `#` comments, quotes, no interpolation; a bare `KEY` is an error. The command line wins over files. Values never reach argv or error messages |
 
 ### Presets (one-click apps)
 
@@ -172,6 +173,12 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane postgres rotate-credentials --postgres-id <id>` | Rotate database access password |
 | `sliplane postgres slow-queries / top-queries` | Inspect query performance and call frequency |
 | `sliplane postgres metrics --postgres-id <id> [--range 1h \| --from <ts> --to <ts>]` | CPU, memory, disk and connection history |
+| `sliplane postgres logs --postgres-id <id> [--since 30m \| --since <rfc3339>] [--until <rfc3339>] [--limit <n>]` | Server logs of the last 24 hours; `--since` takes a duration or a timestamp |
+| `sliplane postgres allowlist show --postgres-id <id> [--my-ip [--ipv4 \| --ipv6]]` | The IP allow list, and whether the database is `open`, `restricted` or `blocked`; `--my-ip` also says whether this machine's address is allowed |
+| `sliplane postgres allowlist add --postgres-id <id> (<ip-or-cidr>... \| --my-ip [--ipv4 \| --ipv6]) [--description <text>]` | Allow addresses or ranges, keeping every other entry. `0.0.0.0/0` and `::/0` (the whole internet) need `--allow-open` |
+| `sliplane postgres allowlist remove --postgres-id <id> (<ip-or-cidr-or-id>... \| --my-ip [--ipv4 \| --ipv6])` | Remove entries by address, range or rule id; refuses to remove the last one |
+| `sliplane postgres allowlist clear --postgres-id <id>` | Remove every entry: the database then refuses all public connections. Prints what was removed and an `undo` command |
+| `sliplane postgres restore --postgres-id <id> [--timestamp <rfc3339>]` | Restore into a new database; without `--timestamp`, to the latest restorable point |
 | `sliplane buckets list` | List S3-compatible object storage buckets |
 | `sliplane buckets create --name <n> --region <r>` | Create an S3 object storage bucket |
 | `sliplane buckets keys --bucket-id <id>` | List S3 access keys |
@@ -188,6 +195,14 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane services attach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Attach a key; prints the host, port and username to connect with |
 | `sliplane services detach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Detach a key |
 | `sliplane pricing` | Standard prices for servers, Postgres and object storage (excl. tax) |
+
+### Registry Credentials
+
+| Command | Description |
+|:---|:---|
+| `sliplane credentials list \| get --credential-id <id>` | List registry credentials, or read one (the token is never returned) |
+| `printf %s "$TOKEN" \| sliplane credentials create --name <n> --type <ghcr\|dockerhub\|dhi\|generic> --username <u> --token-stdin` | Store registry credentials with the token on stdin, out of argv and shell history. `--token <value>` still works but prints a warning. Refuses at once if stdin is a terminal with nothing piped |
+| `sliplane credentials update \| delete --credential-id <id>` | Rename or delete credentials |
 
 ---
 
@@ -232,6 +247,14 @@ sliplane agent-readme          # Human-readable markdown guide
 sliplane agent-readme --json   # Machine-readable rules and schemas
 ```
 
+Point a project's coding agent at the manual with `sliplane agent init`. It writes a short section between `<!-- sliplane:begin -->` and `<!-- sliplane:end -->` markers into `AGENTS.md` (or `--file CLAUDE.md`) in the current directory: run `sliplane agent-readme`, always pass `--account`, never ask for an API key, use `--json` for machines. It needs no account or network, creates the file if it is missing, replaces its own section in place on a re-run and leaves everything outside the markers untouched, and refuses to write outside the current directory. `--print` shows the section and writes nothing.
+
+```bash
+sliplane agent init                       # AGENTS.md
+sliplane agent init --file CLAUDE.md      # Claude Code
+sliplane agent init --print               # show it, write nothing
+```
+
 For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.io/Sliplane-Cli/llms.txt) and [llms-full.txt](https://spacecorps.github.io/Sliplane-Cli/llms-full.txt).
 
 ---
@@ -242,6 +265,7 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - Passing `--env` to `services update` replaces the entire environment array. The CLI warns and aborts if unmentioned variables would be dropped.
    - Use `--merge-env` to preserve unmentioned variables, or `--replace-env` if removal was intentional.
    - Use `services set-env` to change a single variable safely.
+   - `--env-file` and `--secret-env-file` feed the same list, so every protection above applies to variables read from files.
 2. **Preserving Secrets**:
    - In Sliplane, secret values are write-only and read back as empty strings. `--merge-env` safely retains existing secrets without exposing or overwriting them.
    - API keys have per-area permissions, and **Secrets: Read** is one of them. Without it *every* environment value and database password reads back empty, not only the secret ones, so `--merge-env` would overwrite plain variables with nothing. The CLI refuses that (`auth_required`) and points you to `services set-env` or a key with Secrets: Read. `sliplane me` lists a key's scopes, and `accounts add` / `accounts test` warn when `secrets:read` is missing.
