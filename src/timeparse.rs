@@ -187,6 +187,27 @@ mod tests {
     }
 
     #[test]
+    fn formats_timestamps() {
+        assert_eq!(to_rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(to_rfc3339(951_868_800), "2000-03-01T00:00:00Z");
+        assert_eq!(to_rfc3339(1_709_208_000), "2024-02-29T12:00:00Z");
+        assert_eq!(to_rfc3339(-1), "1969-12-31T23:59:59Z");
+        assert_eq!(to_rfc3339(1_798_761_599), "2026-12-31T23:59:59Z");
+        assert_eq!(to_rfc3339(4_102_444_800), "2100-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn formatting_round_trips_through_parsing() {
+        // About every six hours from 1960 to 2110: leap days, century years and both era signs.
+        let mut secs = -310_000_000i64;
+        while secs < 4_400_000_000 {
+            let text = to_rfc3339(secs);
+            assert_eq!(rfc3339(&text), Some((secs, 0)), "{secs} -> {text}");
+            secs += 21_659;
+        }
+    }
+
+    #[test]
     fn since_takes_either_form() {
         let ago = since("5m").unwrap();
         assert!((now() - 300 - ago).abs() <= 1);

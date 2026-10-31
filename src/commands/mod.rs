@@ -2,12 +2,17 @@
 //! own modules (`accounts`, `services`).
 
 mod accounts;
+mod agent;
+mod credentials;
 mod login;
 mod logs;
 mod postgres;
 mod presets;
 mod query;
+mod s3;
 mod services;
+mod ssh;
+mod update;
 mod wait;
 
 use clap::CommandFactory;
@@ -50,6 +55,9 @@ pub fn run(command: Command) -> Result<()> {
         Command::Oauth(c) => oauth(c),
         Command::SshKeys(c) => ssh_keys(c),
         Command::Pricing(a) => print(client(&a)?.get("pricing")?),
+        Command::S3(c) => s3::run(c),
+        Command::Update(c) => update::run(c),
+        Command::Agent(c) => agent::run(c),
     }
 }
 
@@ -404,9 +412,12 @@ fn credentials(c: Credentials) -> Result<()> {
     match c {
         Credentials::List(a) => print(client(&a)?.get("registry-credentials")?),
         Credentials::Get(c) => print(client(&c.a)?.get(&at(&c))?),
-        Credentials::Create { name, kind, username, token, a } => {
+        Credentials::Create { name, kind, username, token, token_stdin, a } => {
+            // Before the account is looked at: a missing token needs no account to report.
+            let token = credentials::token(token, token_stdin)?;
             let body = obj! { "name" => name, "type" => kind, "username" => username, "token" => token };
-            print(client(&a)?.post("registry-credentials", &body)?)
+            let created = client(&a)?.post("registry-credentials", &body);
+            print(created.map_err(|e| credentials::redact(e, &token))?)
         }
         Credentials::Update { c, name } => print(client(&c.a)?.patch(&at(&c), &json!({ "name": name }))?),
         Credentials::Delete(c) => {

@@ -81,6 +81,30 @@ pub enum Command {
     SshKeys(SshKeys),
     /// List standard prices for servers, Postgres and object storage
     Pricing(Account),
+    /// Upload, download, list and delete files in a bucket over the S3 protocol
+    #[command(subcommand)]
+    S3(S3),
+    /// Update this executable to the latest release, after verifying its SHA-256 checksum. Needs no account
+    Update(Update),
+    /// Point a project's coding agent at this CLI's manual
+    #[command(subcommand)]
+    Agent(Agent),
+}
+
+// ---------------------------------------------------------------------------------------------
+// agent
+
+#[derive(Subcommand)]
+pub enum Agent {
+    /// Add a short Sliplane section to AGENTS.md (replaced in place on a re-run). Needs no account or network
+    Init {
+        /// Markdown file to write, inside the current directory (use CLAUDE.md for Claude Code)
+        #[arg(long, value_name = "PATH", default_value = "AGENTS.md")]
+        file: String,
+        /// Print the section and write nothing
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -356,10 +380,21 @@ pub struct WaitFlags {
     pub timeout: Option<u64>,
 }
 
+/// Environment variables read from dotenv files, for the commands that take `--env`.
+#[derive(Args, Default)]
+pub struct EnvFiles {
+    /// Read plain environment variables from a dotenv file: KEY=VALUE lines, # comments, quotes, no interpolation (repeatable). A bare KEY is an error. Flags win over files
+    #[arg(long, value_name = "PATH")]
+    pub env_file: Vec<String>,
+    /// Same as --env-file, but every variable in the file is secret (repeatable). Keeps values out of argv
+    #[arg(long, value_name = "PATH")]
+    pub secret_env_file: Vec<String>,
+}
+
 /// Flags shared by `services create` and `services update`.
 #[derive(Args)]
 pub struct Deploy {
-    /// Container image URL (e.g. docker.io/library/nginx:latest)
+    /// Container image, e.g. ghcr.io/org/app:1.2. Docker Hub shorthand is expanded: nginx -> docker.io/library/nginx:latest, user/app -> docker.io/user/app:latest. A reference with a registry host is sent as written
     #[arg(long, value_name = "URL")]
     pub image: Option<String>,
     /// Repository URL (e.g. https://github.com/user/repo)
@@ -432,6 +467,8 @@ pub enum Services {
         /// Secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Volume mount as id:/path or name:/path (repeatable). A name resolves to the existing volume of that name
         #[arg(long = "volume", value_name = "VOLUME")]
         volumes: Vec<String>,
@@ -455,6 +492,8 @@ pub enum Services {
         /// Secret environment variable (repeatable). Shares one list with --env
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Allow --env/--secret-env to drop variables not listed. Without it, an update that would delete a variable is refused
         #[arg(long, conflicts_with = "merge_env")]
         replace_env: bool,
@@ -597,12 +636,42 @@ pub enum Services {
     },
     /// Rotate the deploy hook URL (needs secrets:read); the old URL stops working immediately
     RotateDeployHook(ServiceRef),
+    /// Run a command on a service, or open a shell, over SSH with a key that exists only for the session
+    Ssh {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// Lifetime of the temporary key if cleanup cannot run: 6m to 30d (default 1h)
+        #[arg(long, value_name = "DURATION")]
+        ttl: Option<String>,
+        /// The command to run on the service, after `--`. Several words are run as given; a single word is
+        /// a command line for the remote shell. Omit it for an interactive shell
+        #[arg(last = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Forward a local port to a port on a service over SSH, until interrupted or --for elapses
+    Tunnel {
+        #[command(flatten)]
+        s: ServiceRef,
+        /// Local port to listen on (127.0.0.1 only)
+        #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+        local_port: u16,
+        /// Port to reach inside the service (as localhost:PORT there)
+        #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+        remote_port: u16,
+        /// Close the tunnel after this long (30s, 5m, 1h) instead of running until interrupted
+        #[arg(long = "for", value_name = "DURATION")]
+        tunnel_for: Option<String>,
+        /// Lifetime of the temporary key if cleanup cannot run: 6m to 30d (default 1h)
+        #[arg(long, value_name = "DURATION")]
+        ttl: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------
 // presets
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
 pub enum Presets {
     /// List the presets. Needs no account: the catalog is public
     List {
@@ -635,6 +704,8 @@ pub enum Presets {
         /// Set or override a secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Do not expose the service publicly, even if the preset does (databases are public TCP by default)
         #[arg(long)]
         private: bool,
@@ -981,9 +1052,12 @@ pub enum Credentials {
         /// Registry username
         #[arg(long)]
         username: String,
-        /// Registry authentication token
+        /// Registry authentication token. Visible in the process list and shell history: prefer --token-stdin
+        #[arg(long, value_name = "TOKEN", conflicts_with = "token_stdin")]
+        token: Option<String>,
+        /// Read the registry token from stdin (keeps it out of argv), e.g. `printf %s "$TOKEN" | sliplane credentials create ... --token-stdin`
         #[arg(long)]
-        token: String,
+        token_stdin: bool,
         #[command(flatten)]
         a: Account,
     },
@@ -1111,7 +1185,9 @@ impl Services {
             | Services::UpdateVolume { s, .. }
             | Services::DetachVolume { s, .. }
             | Services::AttachSshKey { s, .. }
-            | Services::DetachSshKey { s, .. } => Some(s),
+            | Services::DetachSshKey { s, .. }
+            | Services::Ssh { s, .. }
+            | Services::Tunnel { s, .. } => Some(s),
         }
     }
 }
@@ -1155,6 +1231,121 @@ impl Buckets {
             | Buckets::DeleteKey { b, .. } => Some(b),
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// s3
+
+#[derive(Args)]
+pub struct S3Bucket {
+    #[command(flatten)]
+    pub b: BucketId,
+    /// Region the requests are signed for. The endpoint decides where they go; change this only
+    /// if an error names another region
+    #[arg(long, value_name = "REGION", default_value = "us-east-1")]
+    pub region: String,
+}
+
+#[derive(Subcommand)]
+pub enum S3 {
+    /// Create an S3 key for a bucket and keep it in the OS keystore (once per bucket)
+    Connect {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// How long to wait for the new key to become usable
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        timeout: u64,
+    },
+    /// Forget the stored S3 key for a bucket (does not revoke it)
+    Disconnect(BucketId),
+    /// List files in a bucket
+    #[command(visible_alias = "list")]
+    Ls {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// Only keys that start with this
+        #[arg(long, value_name = "PREFIX")]
+        prefix: Option<String>,
+        /// List everything below the prefix instead of folding it at each '/'
+        #[arg(short, long)]
+        recursive: bool,
+        /// Stop after this many entries (0 for no limit)
+        #[arg(long, value_name = "N", default_value_t = 1000)]
+        limit: usize,
+        /// Continue from the nextToken of an earlier, truncated listing
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
+    },
+    /// Upload one file (up to 5 GiB)
+    Upload {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// The local file
+        #[arg(long, value_name = "PATH")]
+        file: String,
+        /// The object key (default: the file's name)
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
+        /// Content-Type to store with the object
+        #[arg(long, value_name = "MIME", default_value = "application/octet-stream")]
+        content_type: String,
+        /// Replace the object if it exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Download one file
+    Download {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// The object key
+        #[arg(long, value_name = "KEY")]
+        key: String,
+        /// Where to write it: a file, a directory, or - for stdout (default: the key's file name here)
+        #[arg(long, value_name = "PATH")]
+        out: Option<String>,
+        /// Replace the local file if it exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Delete files (irreversible in an unversioned bucket, and asks nothing)
+    #[command(visible_alias = "delete")]
+    Rm {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// The object key (repeatable)
+        #[arg(long = "key", value_name = "KEY", required = true)]
+        keys: Vec<String>,
+    },
+}
+
+impl S3 {
+    /// Every `s3` command names a bucket.
+    pub fn bucket_mut(&mut self) -> &mut BucketId {
+        match self {
+            S3::Disconnect(b) => b,
+            S3::Connect { s, .. }
+            | S3::Ls { s, .. }
+            | S3::Upload { s, .. }
+            | S3::Download { s, .. }
+            | S3::Rm { s, .. } => &mut s.b,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// update
+
+/// `--version` is this command's own option, so clap's automatic one is switched off here.
+#[derive(Args, Clone)]
+#[command(disable_version_flag = true)]
+pub struct Update {
+    /// Only report the current and the latest version; change nothing
+    #[arg(long, conflicts_with = "target_version")]
+    pub check: bool,
+
+    /// Install this release (v1.3.0 or 1.3.0) instead of the latest. The only way to go to an older one
+    #[arg(long = "version", value_name = "VERSION")]
+    pub target_version: Option<String>,
 }
 
 #[cfg(test)]

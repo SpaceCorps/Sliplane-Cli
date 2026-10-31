@@ -36,6 +36,10 @@ export SLIPLANE_CONFIG_DIR=$(mktemp -d) SLIPLANE_SECRET_STORE=plaintext
 | `SLIPLANE_API_URL` | Overrides the API base URL - how `tests/cli.rs` points at its mock |
 | `SLIPLANE_PRESETS_URL` | Overrides the preset catalog URL, the same way |
 | `SLIPLANE_PG_CA_FILE` | A testing aid: a PEM file whose certificates `postgres query` trusts **in addition to** Mozilla's roots, so the Docker test can use a CA it generated. Host-name and chain verification stay on |
+| `SLIPLANE_SSH`, `SLIPLANE_SSH_KEYGEN` | Run this program instead of `ssh` / `ssh-keygen` from PATH; `tests/cli.rs` points them at `examples/fake_ssh*.rs` |
+| `SLIPLANE_SSH_RETRY_MS` | Gap between the "has sshd learned the key yet" checks (12 tries); default 5000, the tests use 20 |
+| `SLIPLANE_S3_PAGE_SIZE` | Entries per `s3 ls` request (1-1000). Only the tests set it, to see a listing continue |
+| `SLIPLANE_RELEASES_URL` | Overrides the GitHub releases page for `sliplane update` (and the installers); allows plain http |
 
 There is deliberately **no** `SLIPLANE_API_KEY`. See the invariants below.
 
@@ -50,12 +54,16 @@ src/
     accounts.rs    accounts add|list|test|remove
     services.rs    services *, including the create/update logic
     presets.rs     presets list|show|deploy
+    s3.rs          s3 connect|disconnect|ls|upload|download|rm: the stored key, and the file commands
     logs.rs        services logs --follow: the poll loop and its dedupe
     postgres.rs    postgres allowlist (and its source-IP probe), logs --since, restore's default point
     query.rs       postgres query (fetch credentials, run, explain failures) and postgres connect (psql)
     wait.rs        --wait: poll events until a deploy has an outcome
+    ssh.rs         services ssh|tunnel: temporary key, probe, ssh, cleanup
   presets.rs       the preset catalog: fetch, validate, generate secrets, turn a preset into a request
   pgwire.rs        a small synchronous Postgres client: TLS + SCRAM + Simple Query, rows as JSON values
+  s3.rs            the S3 client: its own HTTP agent, listing/XML parsing, S3 error -> ErrorCode
+  sigv4.rs         AWS Signature V4 (header-based) and the vectors it is tested against
   timeparse.rs     durations (30m) and RFC 3339, without a date-time crate
   client.rs        blocking HTTP (ureq + rustls), status -> ErrorCode, API error hints
   error.rs         ErrorCode (= exit code) and Error {message, detail, remediation}
@@ -65,7 +73,11 @@ src/
   secrets.rs       Keychain (security), libsecret (secret-tool), DPAPI, plaintext
   patharg.rs       refuses Windows paths that Git Bash rewrote out of "/"
   readme.rs        agent-readme text, and the API spec version this build targets
+  release.rs       `update`: latest release, download, checksum, archive extraction (no API key in reach)
+  replace.rs       `update`: stage, verify and swap the running executable
 tests/cli.rs       drives the binary against an in-process mock of the API
+examples/          fake_ssh and fake_ssh_keygen: test doubles for OpenSSH (cargo test builds them; not installed)
+tests/update.rs    drives `update` on a copy of the binary against a fake releases page
 ```
 
 ## Why it is built this way
@@ -130,6 +142,15 @@ resending the current values is correct either way.
 installation directory before this program starts, and the resulting service deploys happily and
 fails every healthcheck with nothing in the output to explain why.
 
+**The S3 key pair and the API key never meet.** `s3.rs` is handed an endpoint, a signing region and an S3
+key pair, and has never heard of the API key; `commands/s3.rs` is the only place that holds both. The S3
+agent follows no redirects (a signed request must not be replayed somewhere it was not signed for), has no
+global timeout (a 5 GiB transfer takes as long as it takes), and refuses plain HTTP except to a loopback
+host. The pair lives in the keystore as JSON under `secrets::s3_key(account, bucketId)` and nowhere else.
+Nothing makes a key as a side effect: only `s3 connect` does, because creating a credential is the human's
+decision. There is deliberately no `SLIPLANE_S3_ACCESS_KEY_ID` override, for the reason there is no
+`SLIPLANE_API_KEY`.
+
 ## Traps in this codebase
 
 **clap reserves the id `version`.** A field named `version` panics at startup ("Argument names must
@@ -176,6 +197,19 @@ previous deploy's value. `wait::known_events` has to be read *before* the deploy
 deploy's own events are mistaken for old ones. The poll interval is a constant, so a test that needs a
 second poll takes three seconds.
 
+**`services ssh` owns stdout, and the cleanup must always run.** The remote command's output goes
+straight to the process's stdout/stderr, so nothing of ours may be printed around it (notes and warnings
+go to stderr, and only before or after the session). That is why it is the one successful command that
+can print nothing. A remote exit status can not be this process's exit code (1-7 are ours); it is
+`remote exit status: N` in the envelope `detail`. `ssh::cleanup` runs after every outcome, and writes
+through `say`, not `eprintln!`: `eprintln!` panics when stderr is closed, and a panic there skips the
+detach and delete. The probe is a *second* connection that runs `exit 0`, because there is no
+authenticate-only mode without ControlMaster, which Windows OpenSSH lacks. Host keys are `accept-new`
+against our own `known_hosts` in the config dir: trust on first use, verified after. The private key is
+never read, printed, or in argv except as the `-i` path. The tests replace ssh and ssh-keygen with
+`examples/fake_ssh*.rs`; run `cargo build --examples` first if you use `cargo test --test cli` alone
+(the test falls back to doing it).
+
 **Never follow logs without a bound in a test or an agent flow.** `--follow` with no `--for` runs until
 interrupted. The tests use `--for 1s`.
 
@@ -191,6 +225,24 @@ The real-server test is `#[ignore]`d because CI has no Docker. It starts `postgr
 `SLIPLANE_TEST_PG_IMAGE`), makes its own CA, and removes the container afterwards:
 `cargo test --test cli postgres_query_against_a_real_postgres -- --ignored`. Run it after touching
 `pgwire.rs`: the unit tests there only replay canned bytes.
+
+**S3 paths are signed as they are sent.** S3 does not normalise or double-encode the path, so `sigv4::sign`
+takes the canonical URI already encoded and `sigv4::uri_encode` is the only encoder; the query string that is
+sent is the very text that was signed. `Host` is set by hand to the endpoint minus its default port, because
+that exact string is both signed and sent. The payload hash of a PUT is a real SHA-256 from a first pass over
+the file, so a file that changes between the passes is refused by the server instead of being stored torn.
+
+**`ureq` decompresses `Content-Encoding: gzip` whatever it was asked, and then drops `Content-Length`.** S3 always
+sends a length, so `ObjectStore::get` treats its absence as that case and refuses: a download must be the
+stored bytes or an error. Do not "fix" it by accepting the decoded body.
+
+**The S3 tests have a real-server mode.** `cargo test s3_` runs against an in-process S3 that verifies every
+signature with code of its own. Point the same scenario at a real server with
+`SLIPLANE_TEST_S3_ENDPOINT=http://127.0.0.1:19000 SLIPLANE_TEST_S3_BUCKET=<existing bucket>
+SLIPLANE_TEST_S3_ACCESS_KEY=... SLIPLANE_TEST_S3_SECRET_KEY=...` (use a secret that differs from the access
+key, or the "secret was printed" check trips on a coincidence); add `SLIPLANE_TEST_S3_MANY=1` for the 1,010-key
+pagination test. `minio/minio` is gone from Docker Hub; `bitnamilegacy/minio` with `MINIO_DEFAULT_BUCKETS` works.
+The tests turn `sha2` up to `opt-level = 3` in the dev profile, or hashing 20 MiB several times takes minutes.
 
 **Parallel tests need their own directories.** `tests/cli.rs` names them with an atomic counter. The
 clock is not unique enough: two tests once shared a directory and deleted each other's config.
@@ -230,11 +282,49 @@ command, because the API wants autoscaling sent separately from `instanceType`/`
 ## Releasing
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on Linux, macOS and Windows for every
-push and pull request. Publishing a GitHub Release builds binaries for each platform and attaches
-them to it:
+push and pull request, plus the installer tests (below). Publishing a GitHub Release builds binaries
+for each platform and attaches them to it:
 
 ```bash
 gh release create v0.3.0 --title v0.3.0 --notes "..."
 ```
 
-Bump `version` in `Cargo.toml` to match the tag first. `sliplane --version` reports it.
+Bump `version` in `Cargo.toml` to match the tag first. `sliplane --version` reports it, and the
+installers refuse a binary whose version differs from the tag, so a forgotten bump fails the release
+instead of shipping a mislabelled binary.
+
+**The release asset layout is a contract.** `scripts/install.sh`, `scripts/install.ps1` and
+`sliplane update` all depend on it, and so do links in the docs:
+
+- `sliplane-vX.Y.Z-<target>.tar.gz` (`.zip` for Windows), holding `sliplane-vX.Y.Z-<target>/sliplane[.exe]`,
+  for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`,
+  `aarch64-unknown-linux-musl` and `x86_64-pc-windows-msvc`
+- `checksums.txt` (`sha256sum` format) covering every archive and both installers
+- `install.sh` and `install.ps1`, copied from `scripts/`, so `releases/latest/download/install.sh`
+  always matches the latest release
+
+The `checksums` job writes the last two after the archives are up and attests them
+(`gh attestation verify <file> --repo SpaceCorps/Sliplane-Cli`); `verify-install` then installs the
+release from the public URLs on Linux, macOS and Windows. Releases up to 1.2.0 have no `checksums.txt`,
+so the installers cannot install them. Checksums come from the same place as the archives, so they
+catch corruption, not a compromised release; the attestation is what ties a file to this workflow.
+
+Installers are tested offline: `sh scripts/test-install.sh <binary>` and
+`pwsh scripts/test-install.ps1 <binary>` build a fake release around a binary and run the real
+installer against it (CI does this on every push). Both installers honour `SLIPLANE_RELEASES_URL`
+for that. Keep `scripts/*.sh` shellcheck-clean, and keep `.gitattributes` forcing LF on them, since a
+CRLF `install.sh` fails on `#!/bin/sh\r`.
+
+`sliplane update` (`src/release.rs` finds, downloads, verifies and extracts; `src/replace.rs` swaps the
+executable) reads that same contract: the `/releases/latest` redirect, `checksums.txt`, and the one
+archive entry `sliplane-vX.Y.Z-<target>/sliplane[.exe]`. Rename or move any of them and `update` breaks
+as the installers do; the `tests/update.rs` fake release mirrors the layout, so change both together.
+It is explicit and never automatic (see PARITY.md), it talks only to the releases page, and a binary that
+reports a version other than the tag's is refused. On Windows the running exe is renamed to
+`sliplane.old.exe`; `main` deletes that on the next start.
+
+Both CLIs are called `sliplane`, so the official Sliplane CLI and this one can fight over a PATH
+slot. This one installs to `~/.sliplane-cli/bin` and uses a `sliplane-cli` config dir (theirs is
+`sliplane`), and the installers warn when another `sliplane` comes first on PATH. The keystore service
+name is `sliplane-cli` in both, but entries are `account:<name>` here and `credential_<hex>` there,
+so they never collide; keep our `account:` prefix.

@@ -560,7 +560,7 @@ fn create_requires_a_deployment_and_resolves_volume_names() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(out["id"], "s9");
     let body = mock.last("POST").body.unwrap();
-    assert_eq!(body["deployment"], json!({"url": "nginx:latest"}));
+    assert_eq!(body["deployment"], json!({"url": "docker.io/library/nginx:latest"}));
     assert_eq!(body["network"], json!({"public": true, "protocol": "http"}));
     assert_eq!(
         body["volumes"],
@@ -2368,6 +2368,2132 @@ fn the_probe_goes_direct_while_other_requests_use_the_proxy() {
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!((count(&mock, "postgres/pg_1"), count(&mock, "me")), (gets + 1, probes + 1), "both requests happened");
     assert_eq!(hits.load(Ordering::SeqCst), 2, "the read went through the proxy; the address probe did not");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --env-file and --secret-env-file
+
+/// Writes a file into the test's own directory and returns its path.
+fn file_in(env: &Env, name: &str, text: &str) -> String {
+    let path = env.dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+const CREATE: [&str; 11] =
+    ["services", "create", "--project-id", "p1", "--name", "web", "--server-id", "srv1", "--image", "nginx", "-a"];
+
+fn create_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = CREATE.to_vec();
+    args.push("work");
+    args.extend(extra);
+    args
+}
+
+#[test]
+fn create_reads_plain_and_secret_variables_from_files_and_the_flag_wins() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let plain = file_in(&env, "plain.env", "# app\nPORT=8080\nexport MODE=\"a b\"\nA=from-file\n");
+    let secret = file_in(&env, "secret.env", "DB_PASSWORD='p#ss $word'\n");
+    let out = env.run(&create_args(&[
+        "--env-file",
+        &plain,
+        "--secret-env-file",
+        &secret,
+        "--env",
+        "A=from-flag",
+        "--secret-env",
+        "S=2",
+        "--json",
+    ]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(
+        body["env"],
+        json!([
+            {"key": "PORT", "value": "8080", "secret": false},
+            {"key": "MODE", "value": "a b", "secret": false},
+            {"key": "DB_PASSWORD", "value": "p#ss $word", "secret": true},
+            {"key": "A", "value": "from-flag", "secret": false},
+            {"key": "S", "value": "2", "secret": true},
+        ])
+    );
+    // The override is named, with where it came from, and no value is printed.
+    assert!(
+        stderr.contains(&format!("note: A at {plain}:4 is replaced by the A given on the command line")),
+        "{stderr}"
+    );
+    for value in ["from-file", "from-flag", "p#ss"] {
+        assert!(!stderr.contains(value), "a value reached stderr: {stderr}");
+    }
+}
+
+#[test]
+fn later_files_replace_earlier_ones_and_say_so() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let first = file_in(&env, "first.env", "A=1\nB=1\n");
+    let second = file_in(&env, "second.env", "B=2\nB=3\n");
+    let out = env.run(&create_args(&["--env-file", &first, "--env-file", &second, "--json"]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        mock.last("POST").body.unwrap()["env"],
+        json!([{"key": "A", "value": "1", "secret": false}, {"key": "B", "value": "3", "secret": false}])
+    );
+    assert!(stderr.contains(&format!("note: B at {second}:1 replaces B at {first}:2")), "{stderr}");
+    assert!(stderr.contains(&format!("note: B at {second}:2 replaces B at {second}:1")), "{stderr}");
+}
+
+#[test]
+fn a_bad_env_file_names_the_line_and_never_the_value_and_creates_nothing() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+
+    // A bare KEY means "empty value" for --env; in a file it is refused, not silently reinterpreted.
+    let bare = file_in(&env, "bare.env", "A=1\nSUPERSECRETTOKEN\n");
+    let (code, _, err) = env.json(&create_args(&["--env-file", &bare]));
+    assert_eq!(code, 6);
+    let message = err["error"].as_str().unwrap();
+    assert!(message.contains("bare.env, line 2"), "{err}");
+    assert!(!message.contains("SUPERSECRETTOKEN"), "the line was echoed: {err}");
+
+    let open = file_in(&env, "open.env", "A=1\nB=\"hunter2 never closed\nC=3\n");
+    let (code, _, err) = env.json(&create_args(&["--secret-env-file", &open]));
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("open.env, line 2"), "{err}");
+    assert!(!err.to_string().contains("hunter2"), "{err}");
+
+    let missing = env.dir.join("nope.env").to_string_lossy().into_owned();
+    let (code, _, err) = env.json(&create_args(&["--env-file", &missing]));
+    assert_eq!(code, 6, "{err}");
+
+    let empty = file_in(&env, "empty.env", "# nothing here\n");
+    let (code, _, err) = env.json(&create_args(&["--env-file", &empty]));
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("defines no variables"), "{err}");
+
+    // Every one of those failed before the account was asked anything but `me`.
+    assert_eq!(paths(&mock, "POST"), Vec::<String>::new());
+    assert_eq!(paths(&mock, "GET"), ["me"], "files are read before any lookup");
+}
+
+#[test]
+fn update_applies_the_env_protections_to_file_variables_too() {
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, repo_service()), ("PATCH", SVC, 200, repo_service())]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "new.env", "A=9\n");
+    let base = ["services", "update", "--project-id", "p1", "--service-id", "s1", "--env-file", &file, "-a", "work"];
+
+    // Without a flag saying what to do with B and S, the update is refused and names them.
+    let (code, _, err) = env.json(&base);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("2 environment variable(s) not listed: B, S"), "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "PATCH"));
+
+    // --merge-env keeps them, secrets sent back empty so the API keeps the stored value.
+    let mut args = base.to_vec();
+    args.push("--merge-env");
+    let (code, _, err) = env.json(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        mock.last("PATCH").body.unwrap()["env"],
+        json!([{"key": "B", "value": "2", "secret": false},
+               {"key": "S", "value": "", "secret": true},
+               {"key": "A", "value": "9", "secret": false}])
+    );
+
+    // --replace-env sends exactly the file.
+    let mut args = base.to_vec();
+    args.push("--replace-env");
+    let (code, _, err) = env.json(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("PATCH").body.unwrap()["env"], json!([{"key": "A", "value": "9", "secret": false}]));
+}
+
+#[test]
+fn update_merge_with_a_key_that_cannot_read_secrets_still_refuses_for_file_variables() {
+    let mock = Mock::start(vec![
+        me_with_scopes(json!(["services:write"])),
+        ("GET", SVC, 200, repo_service()),
+        ("PATCH", SVC, 200, repo_service()),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "new.env", "A=9\n");
+    let (code, _, err) = env.json(&[
+        "services",
+        "update",
+        "--project-id",
+        "p1",
+        "--service-id",
+        "s1",
+        "--secret-env-file",
+        &file,
+        "--merge-env",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 3, "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "PATCH"));
+}
+
+#[test]
+fn update_with_an_env_file_and_no_variables_in_it_is_not_a_silent_no_op() {
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, repo_service()), ("PATCH", SVC, 200, repo_service())]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "empty.env", "\n");
+    let (code, _, err) = env.json(&[
+        "services",
+        "update",
+        "--project-id",
+        "p1",
+        "--service-id",
+        "s1",
+        "--env-file",
+        &file,
+        "--merge-env",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("defines no variables"), "{err}");
+}
+
+#[test]
+fn presets_deploy_takes_env_files_as_overrides() {
+    let mock = Mock::start(vec![me(), catalog(), ("POST", "projects/p1/services", 201, json!({"id": "svc1"}))]);
+    let env = Env::new(&mock).with_account();
+    let secrets = file_in(&env, "keys.env", "OPENAI_API_KEY=sk-from-file\n");
+    let (code, _, err) = env.json(&[
+        "presets",
+        "deploy",
+        "n8n",
+        "--project-id",
+        "p1",
+        "--server-id",
+        "srv1",
+        "--secret-env-file",
+        &secrets,
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(body["env"], json!([{"key": "OPENAI_API_KEY", "value": "sk-from-file", "secret": true}]));
+}
+
+// ---------------------------------------------------------------------------------------------
+// credentials create: the token on stdin
+
+impl Env {
+    /// Runs the binary with `stdin` piped to it (or closed, when None), capturing both streams.
+    fn run_with_stdin(&self, args: &[&str], stdin: Option<&[u8]>) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sliplane"))
+            .args(args)
+            .env("SLIPLANE_CONFIG_DIR", &self.dir)
+            .env("SLIPLANE_SECRET_STORE", "plaintext")
+            .env("SLIPLANE_API_URL", &self.api)
+            .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(bytes) = stdin {
+            // The child may stop reading early (an oversized token): a broken pipe is fine.
+            let _ = child.stdin.take().unwrap().write_all(bytes);
+        }
+        child.wait_with_output().unwrap()
+    }
+}
+
+const CRED_BASE: [&str; 9] =
+    ["credentials", "create", "--name", "gh", "--type", "ghcr", "--username", "octo", "--json"];
+
+fn credential_routes() -> Vec<Route> {
+    vec![
+        me(),
+        (
+            "POST",
+            "registry-credentials",
+            201,
+            json!({"id": "credential_1", "name": "gh", "type": "ghcr", "username": "octo", "createdAt": "2026-10-31T12:00:00Z"}),
+        ),
+    ]
+}
+
+#[test]
+fn credentials_token_comes_from_stdin_and_never_touches_argv() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+
+    // The line break `printf`/`echo` adds is not part of the token; a CRLF from Windows is not either.
+    let out = env.run_with_stdin(&args, Some(b"ghp_secret value \r\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        mock.last("POST").body.unwrap(),
+        json!({"name": "gh", "type": "ghcr", "username": "octo", "token": "ghp_secret value "})
+    );
+    assert!(!stderr.contains("registry token in the process list"), "stdin is the right way, so no nagging: {stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ghp_secret"), "the token was printed");
+}
+
+#[test]
+fn credentials_token_on_argv_still_works_but_warns_without_repeating_it() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token", "ghp_argv_secret", "-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(mock.last("POST").body.unwrap()["token"], "ghp_argv_secret");
+    assert!(stderr.contains("warning: --token puts the registry token in the process list"), "{stderr}");
+    assert!(stderr.contains("--token-stdin"), "{stderr}");
+    assert!(!stderr.contains("ghp_argv_secret"), "the warning must not echo the token: {stderr}");
+}
+
+#[test]
+fn credentials_token_is_required_from_exactly_one_place() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+
+    // Nothing given: say how, and do not look at the account or the network.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    assert_eq!(out.status.code(), Some(6));
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert!(err["remediation"].as_str().unwrap().contains("--token-stdin"), "{err}");
+
+    // --token-stdin with nothing piped (stdin closed) must fail, not hang.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stdin was empty"));
+    let out = env.run_with_stdin(&args, Some(b"\n"));
+    assert_eq!(out.status.code(), Some(6), "a blank line is not a token");
+
+    // Both: refused by the parser.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token", "x", "--token-stdin", "-a", "work"]);
+    assert_eq!(env.run_with_stdin(&args, Some(b"y")).status.code(), Some(6));
+
+    // Oversized input is not a token.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, Some(&vec![b'a'; 70 * 1024]));
+    assert_eq!(out.status.code(), Some(6));
+
+    assert_eq!(paths(&mock, "POST"), Vec::<String>::new(), "none of those reached the API");
+}
+
+#[test]
+fn credentials_errors_do_not_echo_the_token_back() {
+    let mock = Mock::start(vec![
+        me(),
+        (
+            "POST",
+            "registry-credentials",
+            400,
+            json!({"code": "invalid_request", "message": "token ghp_leaky is not valid"}),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, Some(b"ghp_leaky"));
+    assert_eq!(out.status.code(), Some(6));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("ghp_leaky"), "{stderr}");
+    assert!(stderr.contains("[redacted]"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --image shorthand
+
+#[test]
+fn create_expands_docker_hub_shorthand_and_says_so() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let sent = |image: &str| {
+        let out = env.run(&create_args_with_image(image));
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+        (mock.last("POST").body.unwrap()["deployment"]["url"].as_str().unwrap().to_string(), stderr)
+    };
+
+    let (url, stderr) = sent("nginx");
+    assert_eq!(url, "docker.io/library/nginx:latest");
+    assert!(stderr.contains("note: --image 'nginx' was sent as 'docker.io/library/nginx:latest'"), "{stderr}");
+
+    assert_eq!(sent("nginx:1.27").0, "docker.io/library/nginx:1.27");
+    assert_eq!(sent("user/app").0, "docker.io/user/app:latest");
+
+    // A registry host means the reference is complete: sent as written, and no note.
+    for image in ["ghcr.io/o/r:tag", "localhost:5000/app", "docker.io/library/nginx:1.27"] {
+        let (url, stderr) = sent(image);
+        assert_eq!(url, image);
+        assert!(!stderr.contains("note: --image"), "{image}: {stderr}");
+    }
+    let digest = "ghcr.io/o/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert_eq!(sent(digest).0, digest);
+    let hub_digest = "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert_eq!(sent(hub_digest).0, format!("docker.io/library/{hub_digest}"));
+}
+
+fn create_args_with_image(image: &str) -> Vec<&str> {
+    vec![
+        "services",
+        "create",
+        "--project-id",
+        "p1",
+        "--name",
+        "web",
+        "--server-id",
+        "srv1",
+        "--image",
+        image,
+        "-a",
+        "work",
+        "--json",
+    ]
+}
+
+#[test]
+fn update_expands_the_image_and_keeps_credentials_in_the_same_registry() {
+    let current =
+        json!({"id": "s1", "deployment": {"url": "docker.io/acme/app:1", "registryAuthenticationId": "cred_1"}});
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, current.clone()), ("PATCH", SVC, 200, current)]);
+    let env = Env::new(&mock).with_account();
+    let update = |image: &str| {
+        let out = env.run(&[
+            "services",
+            "update",
+            "--project-id",
+            "p1",
+            "--service-id",
+            "s1",
+            "--image",
+            image,
+            "-a",
+            "work",
+            "--json",
+        ]);
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+        (mock.last("PATCH").body.unwrap()["deployment"].clone(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+
+    // `acme/app:2` is Docker Hub like the stored `docker.io/acme/app:1`, so the credentials stay.
+    let (dep, stderr) = update("acme/app:2");
+    assert_eq!(dep, json!({"url": "docker.io/acme/app:2", "registryAuthenticationId": "cred_1"}));
+    assert!(stderr.contains("note: --image 'acme/app:2' was sent as 'docker.io/acme/app:2'"), "{stderr}");
+
+    // Another registry drops them, exactly as before.
+    let (dep, stderr) = update("ghcr.io/acme/app:2");
+    assert_eq!(dep, json!({"url": "ghcr.io/acme/app:2"}));
+    assert!(!stderr.contains("note: --image"), "{stderr}");
+}
+
+#[test]
+fn a_rejected_image_command_says_nothing_about_the_image() {
+    // --image with --repo is refused before the value is looked at, so no note is printed.
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock).with_account();
+    let out = env.run(&[
+        "services",
+        "create",
+        "--project-id",
+        "p1",
+        "--name",
+        "web",
+        "--server-id",
+        "srv1",
+        "--image",
+        "nginx",
+        "--repo",
+        "https://github.com/o/r",
+        "-a",
+        "work",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("note: --image"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// agent init
+
+impl Env {
+    /// A fresh project directory to run in; `agent init` writes relative to the working directory.
+    fn project(&self, name: &str) -> PathBuf {
+        let dir = self.dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn run_in(&self, dir: &std::path::Path, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_sliplane"))
+            .args(args)
+            .current_dir(dir)
+            .env("SLIPLANE_CONFIG_DIR", &self.dir)
+            .env("SLIPLANE_SECRET_STORE", "plaintext")
+            .env("SLIPLANE_API_URL", &self.api)
+            .output()
+            .unwrap()
+    }
+}
+
+fn status_of(out: &Output) -> Value {
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)))
+}
+
+#[test]
+fn agent_init_creates_the_file_and_a_rerun_changes_nothing() {
+    // No account, no routes: it must not need either, nor make a request.
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("fresh");
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(status_of(&out), json!({"status": "created", "path": "AGENTS.md"}));
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with("<!-- sliplane:begin -->\n") && text.trim_end().ends_with("<!-- sliplane:end -->"));
+    for needed in ["sliplane agent-readme", "--account", "API key", "--json"] {
+        assert!(text.contains(needed), "{needed}: {text}");
+    }
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(status_of(&out)["status"], "unchanged");
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), text);
+    assert!(mock.requests().is_empty(), "agent init must not touch the network");
+}
+
+#[test]
+fn agent_init_replaces_its_section_in_place_and_keeps_everything_else() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("existing");
+    let mine_before = "# My project\n\nRules I wrote.\n\n";
+    let mine_after = "\n## Other tooling\n\n- keep me";
+    std::fs::write(
+        dir.join("AGENTS.md"),
+        format!("{mine_before}<!-- sliplane:begin -->\nan old, stale version\n<!-- sliplane:end -->{mine_after}"),
+    )
+    .unwrap();
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(status_of(&out)["status"], "updated");
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with(mine_before) && text.ends_with(mine_after), "{text}");
+    assert!(text.contains("sliplane agent-readme") && !text.contains("stale"), "{text}");
+    assert_eq!(text.matches("sliplane:begin").count(), 1);
+
+    // Text with no markers gets the section appended, and the original text stays as it was.
+    std::fs::write(dir.join("CLAUDE.md"), "# Notes\nno trailing blank line").unwrap();
+    let out = env.run_in(&dir, &["agent", "init", "--file", "CLAUDE.md", "--json"]);
+    assert_eq!(status_of(&out), json!({"status": "updated", "path": "CLAUDE.md"}));
+    let text = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+    assert!(text.starts_with("# Notes\nno trailing blank line\n\n<!-- sliplane:begin -->"), "{text}");
+}
+
+#[test]
+fn agent_init_print_shows_the_section_and_writes_nothing() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("printing");
+
+    let out = env.run_in(&dir, &["agent", "init", "--print"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("<!-- sliplane:begin -->") && text.contains("sliplane agent-readme"), "{text}");
+    assert!(!dir.join("AGENTS.md").exists());
+
+    let out = env.run_in(&dir, &["agent", "init", "--print", "--json"]);
+    assert!(status_of(&out)["content"].as_str().unwrap().ends_with("<!-- sliplane:end -->"));
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "--print wrote something");
+}
+
+#[test]
+fn agent_init_will_not_write_outside_the_working_directory() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("inside");
+    let outside = env.dir.join("escaped.md");
+    let outside_path = outside.to_string_lossy().into_owned();
+
+    for file in ["../escaped.md", "sub/../../escaped.md", outside_path.as_str()] {
+        let out = env.run_in(&dir, &["agent", "init", "--file", file, "--json"]);
+        assert_eq!(out.status.code(), Some(6), "{file}: {}", String::from_utf8_lossy(&out.stdout));
+        assert!(!outside.exists(), "{file} escaped");
+    }
+
+    // Only Markdown, only regular files, and the directory has to exist.
+    for (file, why) in [("script.sh", "Markdown"), ("nowhere/AGENTS.md", "does not exist"), ("", "empty")] {
+        let out = env.run_in(&dir, &["agent", "init", "--file", file, "--json"]);
+        assert_eq!(out.status.code(), Some(6), "{file}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains(why), "{file}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    std::fs::create_dir(dir.join("dir.md")).unwrap();
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--file", "dir.md", "--json"]).status.code(), Some(6));
+
+    // A file inside a subdirectory of the working directory is fine.
+    std::fs::create_dir(dir.join("docs")).unwrap();
+    let out = env.run_in(&dir, &["agent", "init", "--file", "docs/AGENTS.md", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("docs").join("AGENTS.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_init_will_not_follow_a_symbolic_link_out_of_the_tree() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("linked");
+    let elsewhere = env.project("elsewhere");
+    std::fs::write(elsewhere.join("target.md"), "not yours").unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("target.md"), dir.join("AGENTS.md")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.join("linkdir")).unwrap();
+
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--json"]).status.code(), Some(6));
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--file", "linkdir/new.md", "--json"]).status.code(), Some(6));
+    assert_eq!(std::fs::read_to_string(elsewhere.join("target.md")).unwrap(), "not yours");
+    assert!(!elsewhere.join("new.md").exists());
+}
+
+#[test]
+fn agent_init_refuses_broken_markers_and_leaves_the_file_alone() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("broken");
+    let original = "# Mine\n<!-- sliplane:begin -->\nhalf a section\n";
+    std::fs::write(dir.join("AGENTS.md"), original).unwrap();
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nothing was written"));
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), original);
+
+    // Not text at all: also left alone.
+    std::fs::write(dir.join("AGENTS.md"), b"\xff\xfe binary").unwrap();
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--json"]).status.code(), Some(6));
+    assert_eq!(std::fs::read(dir.join("AGENTS.md")).unwrap(), b"\xff\xfe binary");
+}
+
+#[test]
+fn agent_init_keeps_crlf_files_crlf() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("crlf");
+    std::fs::write(dir.join("AGENTS.md"), "# Mine\r\n\r\ntext\r\n").unwrap();
+    assert_eq!(status_of(&env.run_in(&dir, &["agent", "init", "--json"]))["status"], "updated");
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with("# Mine\r\n\r\ntext\r\n\r\n<!-- sliplane:begin -->\r\n"), "{text:?}");
+    assert!(!text.replace("\r\n", "").contains('\n'), "mixed line endings: {text:?}");
+    assert_eq!(status_of(&env.run_in(&dir, &["agent", "init", "--json"]))["status"], "unchanged");
+}
+
+// ---------------------------------------------------------------------------------------------
+// s3: files in a bucket, over the S3 protocol
+//
+// Two servers are involved. `Mock` plays the Sliplane API (bucket list, key create/delete) and
+// `MockS3` plays the bucket's endpoint. The mock S3 checks every request's Signature V4 itself,
+// with code written separately from the CLI's, and its payload hash against the body it received,
+// so a request that real S3 would refuse is refused here too.
+//
+// The same scenario also runs against a real S3-compatible server when one is named:
+//   SLIPLANE_TEST_S3_ENDPOINT=http://127.0.0.1:19000 SLIPLANE_TEST_S3_BUCKET=testbucket \
+//   SLIPLANE_TEST_S3_ACCESS_KEY=minioadmin SLIPLANE_TEST_S3_SECRET_KEY=minioadmin cargo test s3_
+
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+
+const S3_ACCESS: &str = "AKIAMOCKEXAMPLE";
+const S3_SECRET: &str = "mockSecretKey/ForTests+Only0123456789";
+
+#[derive(Clone, Debug)]
+struct S3Seen {
+    method: String,
+    target: String,
+    headers: Vec<(String, String)>,
+}
+
+struct S3Opts {
+    bucket: &'static str,
+    /// The first this-many requests are refused as if the key were not active yet.
+    reject_first: usize,
+    /// Answer every request with a redirect to this URL instead.
+    redirect: Option<String>,
+}
+
+impl Default for S3Opts {
+    fn default() -> S3Opts {
+        S3Opts { bucket: "files", reject_first: 0, redirect: None }
+    }
+}
+
+struct MockS3 {
+    url: String,
+    seen: Arc<Mutex<Vec<S3Seen>>>,
+}
+
+impl MockS3 {
+    fn requests(&self) -> Vec<S3Seen> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn header_of<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
+/// What a server does with a Signature V4 request: rebuild the canonical request from what arrived
+/// on the wire and compare signatures. Nothing is shared with the CLI's signer.
+fn signature_ok(method: &str, path: &str, query: &str, headers: &[(String, String)], secret: &str) -> bool {
+    let Some(auth) = header_of(headers, "authorization") else { return false };
+    let field = |name: &str| auth.split(name).nth(1).map(|r| r.split([',', ' ']).next().unwrap_or("")).unwrap_or("");
+    let credential = field("Credential=");
+    let signed = field("SignedHeaders=");
+    let given = field("Signature=");
+    let scope: Vec<&str> = credential.split('/').collect();
+    if scope.len() != 5 || scope[2] != "us-east-1" || scope[3] != "s3" || scope[4] != "aws4_request" {
+        return false;
+    }
+    let mut pairs: Vec<&str> = if query.is_empty() { Vec::new() } else { query.split('&').collect() };
+    pairs.sort();
+    let canonical_headers: String =
+        signed.split(';').map(|h| format!("{h}:{}\n", header_of(headers, h).unwrap_or("").trim())).collect();
+    let payload = header_of(headers, "x-amz-content-sha256").unwrap_or("");
+    let canonical = format!("{method}\n{path}\n{}\n{canonical_headers}\n{signed}\n{payload}", pairs.join("&"));
+    let amz_date = header_of(headers, "x-amz-date").unwrap_or("");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{}/{}/s3/aws4_request\n{}",
+        scope[1],
+        scope[2],
+        hex_of(&Sha256::digest(canonical.as_bytes()))
+    );
+    let mut key = hmac_sha256(format!("AWS4{secret}").as_bytes(), scope[1].as_bytes());
+    for part in [scope[2], "s3", "aws4_request"] {
+        key = hmac_sha256(&key, part.as_bytes());
+    }
+    hex_of(&hmac_sha256(&key, string_to_sign.as_bytes())) == given
+}
+
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
+/// How AWS writes a key when asked for `encoding-type=url`: spaces as `+`, `/` kept.
+fn list_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn s3_error(status: u16, code: &str, message: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>{code}</Code><Message>{message}</Message><RequestId>REQ1</RequestId></Error>"
+    );
+    (status, vec![("Content-Type".into(), "application/xml".into())], body.into_bytes())
+}
+
+/// ListObjectsV2 over an in-memory bucket, the way S3 does it: entries (keys and folded prefixes)
+/// in order, a page of at most `max-keys`, and the last entry returned as the continuation token.
+fn list_response(objects: &BTreeMap<String, Vec<u8>>, query: &str, bucket: &str) -> Vec<u8> {
+    let q: BTreeMap<String, String> =
+        query.split('&').filter_map(|p| p.split_once('=')).map(|(k, v)| (pct_decode(k), pct_decode(v))).collect();
+    let prefix = q.get("prefix").cloned().unwrap_or_default();
+    let delimiter = q.get("delimiter").cloned().unwrap_or_default();
+    let max: usize = q.get("max-keys").and_then(|m| m.parse().ok()).unwrap_or(1000);
+    let after = q.get("continuation-token").cloned();
+    let url = q.get("encoding-type").is_some_and(|e| e == "url");
+    let enc = |s: &str| if url { list_encode(s) } else { s.to_string() };
+
+    // (name, is_folder), in S3's order.
+    let mut entries: Vec<(String, bool)> = Vec::new();
+    for key in objects.keys().filter(|k| k.starts_with(&prefix)) {
+        let rest = &key[prefix.len()..];
+        match (!delimiter.is_empty()).then(|| rest.find(&delimiter)).flatten() {
+            Some(i) => {
+                let folder = format!("{prefix}{}", &rest[..i + delimiter.len()]);
+                if entries.last().map(|(n, f)| (n.as_str(), *f)) != Some((folder.as_str(), true)) {
+                    entries.push((folder, true));
+                }
+            }
+            None => entries.push((key.clone(), false)),
+        }
+    }
+    if let Some(after) = &after {
+        entries.retain(|(n, _)| n > after);
+    }
+    let truncated = entries.len() > max;
+    entries.truncate(max);
+
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>{bucket}</Name><Prefix>{}</Prefix><KeyCount>{}</KeyCount><MaxKeys>{max}</MaxKeys>",
+        xml_escape(&enc(&prefix)),
+        entries.len()
+    );
+    if url {
+        xml.push_str("<EncodingType>url</EncodingType>");
+    }
+    xml.push_str(&format!("<IsTruncated>{truncated}</IsTruncated>"));
+    if truncated {
+        xml.push_str(&format!(
+            "<NextContinuationToken>{}</NextContinuationToken>",
+            xml_escape(&entries.last().unwrap().0)
+        ));
+    }
+    for (name, folder) in &entries {
+        if *folder {
+            xml.push_str(&format!("<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>", xml_escape(&enc(name))));
+        } else {
+            let body = &objects[name];
+            xml.push_str(&format!(
+                "<Contents><Key>{}</Key><LastModified>2026-10-31T12:00:00.000Z</LastModified><ETag>&quot;{}&quot;</ETag><Size>{}</Size><StorageClass>STANDARD</StorageClass></Contents>",
+                xml_escape(&enc(name)),
+                &hex_of(&Sha256::digest(body))[..32],
+                body.len()
+            ));
+        }
+    }
+    xml.push_str("</ListBucketResult>");
+    xml.into_bytes()
+}
+
+fn start_s3(opts: S3Opts) -> MockS3 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let objects = Arc::new(Mutex::new(BTreeMap::<String, Vec<u8>>::new()));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let opts = Arc::new(opts);
+    let log = seen.clone();
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let (log, objects, counter, opts) = (log.clone(), objects.clone(), counter.clone(), opts.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let target = parts.next().unwrap_or("").to_string();
+                let mut headers = Vec::new();
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let h = h.trim_end();
+                    if h.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        headers.push((k.trim().to_lowercase(), v.trim().to_string()));
+                    }
+                }
+                let len: usize = header_of(&headers, "content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let mut body = vec![0; len];
+                if reader.read_exact(&mut body).is_err() {
+                    return;
+                }
+                log.lock().unwrap().push(S3Seen {
+                    method: method.clone(),
+                    target: target.clone(),
+                    headers: headers.clone(),
+                });
+
+                let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                let (status, mut out_headers, out_body) = (|| {
+                    if let Some(to) = &opts.redirect {
+                        return (307, vec![("Location".to_string(), format!("{to}{target}"))], Vec::new());
+                    }
+                    let credential = header_of(&headers, "authorization").unwrap_or("");
+                    if !credential.contains(&format!("Credential={S3_ACCESS}/")) {
+                        return s3_error(
+                            403,
+                            "InvalidAccessKeyId",
+                            "The Access Key Id you provided does not exist in our records.",
+                        );
+                    }
+                    if counter.fetch_add(1, Ordering::SeqCst) < opts.reject_first {
+                        return s3_error(403, "InvalidAccessKeyId", "The key is not active yet.");
+                    }
+                    if !signature_ok(&method, path, query, &headers, S3_SECRET) {
+                        return s3_error(
+                            403,
+                            "SignatureDoesNotMatch",
+                            "The request signature we calculated does not match.",
+                        );
+                    }
+                    // The payload hash that was signed has to be the hash of the body that came.
+                    let claimed = header_of(&headers, "x-amz-content-sha256").unwrap_or("");
+                    if claimed != "UNSIGNED-PAYLOAD" && claimed != hex_of(&Sha256::digest(&body)) {
+                        return s3_error(
+                            400,
+                            "XAmzContentSHA256Mismatch",
+                            "The provided x-amz-content-sha256 header does not match what was computed.",
+                        );
+                    }
+                    let Some(rest) = path.strip_prefix('/').and_then(|p| p.strip_prefix(opts.bucket)) else {
+                        return s3_error(404, "NoSuchBucket", "The specified bucket does not exist");
+                    };
+                    let key = pct_decode(rest.strip_prefix('/').unwrap_or(""));
+                    let mut store = objects.lock().unwrap();
+                    match (method.as_str(), key.is_empty()) {
+                        ("GET", true) => (
+                            200,
+                            vec![("Content-Type".into(), "application/xml".into())],
+                            list_response(&store, query, opts.bucket),
+                        ),
+                        ("PUT", false) => {
+                            let etag = format!("\"{}\"", &hex_of(&Sha256::digest(&body))[..32]);
+                            store.insert(key, body.clone());
+                            (200, vec![("ETag".into(), etag)], Vec::new())
+                        }
+                        ("GET" | "HEAD", false) => match store.get(&key) {
+                            Some(b) => (
+                                200,
+                                vec![("Content-Length".into(), b.len().to_string())],
+                                if method == "GET" { b.clone() } else { Vec::new() },
+                            ),
+                            None if method == "HEAD" => (404, Vec::new(), Vec::new()),
+                            None => s3_error(404, "NoSuchKey", "The specified key does not exist."),
+                        },
+                        ("DELETE", false) => {
+                            store.remove(&key);
+                            (204, Vec::new(), Vec::new())
+                        }
+                        _ => s3_error(400, "InvalidRequest", "not something this mock does"),
+                    }
+                })();
+
+                // A HEAD answers with the length of the object it did not send.
+                let declared =
+                    out_headers.iter().position(|(k, _)| k == "Content-Length").map(|i| out_headers.remove(i).1);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nConnection: close\r\nContent-Length: {}\r\n",
+                    declared.unwrap_or(out_body.len().to_string())
+                );
+                for (k, v) in &out_headers {
+                    let _ = write!(stream, "{k}: {v}\r\n");
+                }
+                let _ = write!(stream, "\r\n");
+                let _ = stream.write_all(&out_body);
+            });
+        }
+    });
+    MockS3 { url, seen }
+}
+
+/// A Sliplane API that knows one bucket, `sb_1`, and hands out S3 keys for it.
+fn api_for(endpoint: &str, bucket: &str, access: &str, secret: &str, status: &str) -> Mock {
+    Mock::start(vec![
+        me(),
+        (
+            "GET",
+            "buckets",
+            200,
+            json!([
+                {"id": "sb_other", "name": "elsewhere", "endpoint": "https://other.example", "status": "active"},
+                {"id": "sb_1", "name": bucket, "region": "ger", "endpoint": endpoint, "status": status}
+            ]),
+        ),
+        (
+            "POST",
+            "buckets/sb_1/keys",
+            201,
+            json!({"id": "sk_1", "name": "sliplane-cli (work)", "accessKeyId": access, "secretAccessKey": secret, "createdAt": "2026-10-31T12:00:00Z"}),
+        ),
+        ("DELETE", "buckets/sb_1/keys/sk_1", 204, json!({})),
+    ])
+}
+
+fn run_with(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sliplane"))
+        .args(args)
+        .env("SLIPLANE_CONFIG_DIR", &env.dir)
+        .env("SLIPLANE_SECRET_STORE", "plaintext")
+        .env("SLIPLANE_API_URL", &env.api)
+        .envs(extra.iter().copied())
+        .output()
+        .unwrap()
+}
+
+fn json_with(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> (i32, Value, Value) {
+    let mut all = args.to_vec();
+    all.push("--json");
+    let out = run_with(env, &all, extra);
+    let parse = |b: &[u8]| {
+        let s = String::from_utf8_lossy(b);
+        let s =
+            s.lines().filter(|l| !l.starts_with("warning:") && !l.starts_with("note:")).collect::<Vec<_>>().join("\n");
+        serde_json::from_str(&s).unwrap_or(Value::Null)
+    };
+    (out.status.code().unwrap(), parse(&out.stdout), parse(&out.stderr))
+}
+
+/// Deterministic bytes that do not compress, `len` of them.
+fn noise(len: usize) -> Vec<u8> {
+    let mut x = 0x9E3779B97F4A7C15u64;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+fn sha_hex(bytes: &[u8]) -> String {
+    hex_of(&Sha256::digest(bytes))
+}
+
+/// Where the scenario's S3 server is, and the key it accepts.
+struct S3Target {
+    endpoint: String,
+    bucket: String,
+    access: String,
+    secret: String,
+}
+
+fn keys_of(v: &Value) -> Vec<String> {
+    v["objects"].as_array().unwrap().iter().map(|o| o["key"].as_str().unwrap().to_string()).collect()
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect()
+}
+
+/// Everything a user does with a bucket, in order, against whichever server `t` names.
+fn files_scenario(t: &S3Target) {
+    let api = api_for(&t.endpoint, &t.bucket, &t.access, &t.secret, "active");
+    let env = Env::new(&api).with_account();
+    let run = |args: &[&str]| -> (i32, Value, Value) {
+        let mut all = vec!["s3"];
+        all.extend_from_slice(args);
+        all.extend_from_slice(&["-a", "work", "--bucket", &t.bucket]);
+        env.json(&all)
+    };
+    // Real servers keep what earlier runs left; everything here lives under a folder of its own.
+    let p = format!("sl-test-{}-{}", std::process::id(), env.dir.file_name().unwrap().to_string_lossy());
+
+    // 1. Without a key, nothing happens, and the way forward is spelled out.
+    let (code, _, err) = run(&["ls"]);
+    assert_eq!(code, 3, "{err}");
+    assert!(err["remediation"].as_str().unwrap().starts_with("sliplane s3 connect -a work --bucket-id sb_1"), "{err}");
+    assert!(api.requests().iter().all(|r| r.method != "POST"), "ls made a key");
+
+    // 2. connect makes one, keeps it, and prints nothing secret.
+    let (code, out, err) = run(&["connect"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "connected");
+    assert_eq!(out["reused"], false);
+    assert_eq!(out["bucket"], t.bucket.as_str());
+    assert_eq!(out["keyId"], "sk_1");
+    assert_eq!(out["accessKeyId"], t.access.as_str());
+    assert_eq!(out["secretStore"], "plaintext");
+    let raw = env.run(&["s3", "connect", "-a", "work", "--bucket", &t.bucket]);
+    let shown = format!("{}{}", String::from_utf8_lossy(&raw.stdout), String::from_utf8_lossy(&raw.stderr));
+    assert!(!shown.contains(&t.secret), "the secret was printed: {shown}");
+    let post = api.requests().into_iter().filter(|r| r.method == "POST").collect::<Vec<_>>();
+    assert_eq!(post.len(), 1, "the second connect made another key");
+    assert_eq!(post[0].path, "buckets/sb_1/keys");
+    assert_eq!(post[0].body.as_ref().unwrap()["name"], "sliplane-cli (work)");
+    // The pair is in the keystore (the plaintext one, here) and nowhere else.
+    let secrets_file = std::fs::read_to_string(env.dir.join("secrets.json")).unwrap();
+    assert!(secrets_file.contains("s3:work:sb_1") && secrets_file.contains(&t.secret));
+    let config = std::fs::read_to_string(env.dir.join("config.yaml")).unwrap();
+    assert!(!config.contains(&t.secret) && !config.contains(&t.access), "{config}");
+    let (_, again, _) = run(&["connect"]);
+    assert_eq!(again["reused"], true);
+
+    // 3. Uploads: a small file under an awkward key, a refusal to overwrite, and a big one.
+    let small = env.dir.join("small.txt");
+    std::fs::write(&small, b"hello, bucket\n").unwrap();
+    let small = small.to_str().unwrap();
+    let awkward = format!("{p}/docs/hello world+1.txt");
+    let (code, out, err) = run(&["upload", "--file", small, "--key", &awkward]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["size"].as_u64()), (Some("uploaded"), Some(14)));
+    assert_eq!(out["key"], awkward.as_str());
+    assert!(!out["etag"].as_str().unwrap().is_empty());
+    let (code, _, err) = run(&["upload", "--file", small, "--key", &awkward]);
+    assert_eq!(code, 6, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("already exists"));
+    assert!(err["remediation"].as_str().unwrap().contains("--force"));
+    assert_eq!(run(&["upload", "--file", small, "--key", &awkward, "--force"]).0, 0);
+
+    let unicode = format!("{p}/docs/caf\u{e9}/\u{fc}n\u{ef}.txt");
+    assert_eq!(run(&["upload", "--file", small, "--key", &unicode]).0, 0);
+    assert_eq!(run(&["upload", "--file", small, "--key", &format!("{p}/top.txt")]).0, 0);
+
+    let big_bytes = noise(20 * 1024 * 1024 + 3);
+    let big = env.dir.join("blob.bin");
+    std::fs::write(&big, &big_bytes).unwrap();
+    let big_key = format!("{p}/big/blob.bin");
+    let (code, out, err) = run(&["upload", "--file", big.to_str().unwrap(), "--key", &big_key]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["size"], big_bytes.len());
+    // With no --key the object is named after the file.
+    let named_file = env.dir.join(format!("{p}-named.txt"));
+    std::fs::write(
+        &named_file,
+        b"named
+",
+    )
+    .unwrap();
+    let named_key = format!("{p}-named.txt");
+    let (code, out, err) = run(&["upload", "--file", named_file.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["key"], named_key.as_str());
+
+    // 4. Listings: folded at '/', below a prefix, and all the way down.
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), [format!("{p}/top.txt")]);
+    assert_eq!(strings(&out["prefixes"]), [format!("{p}/big/"), format!("{p}/docs/")]);
+    assert_eq!(out["truncated"], false);
+    assert_eq!(out["bucket"], t.bucket.as_str());
+
+    let (_, out, _) = run(&["ls", "--prefix", &format!("{p}/docs/")]);
+    assert_eq!(keys_of(&out), std::slice::from_ref(&awkward));
+    assert_eq!(strings(&out["prefixes"]), [format!("{p}/docs/caf\u{e9}/")]);
+    let o = &out["objects"][0];
+    assert_eq!(o["size"], 14);
+    assert!(o["lastModified"].as_str().unwrap().starts_with("20"), "{o}");
+    assert!(!o["etag"].as_str().unwrap().is_empty() && !o["etag"].as_str().unwrap().contains('"'));
+
+    // A prefix with a space, a plus and non-ASCII is signed as it is sent in the query string.
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/docs/hello world+")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), std::slice::from_ref(&awkward));
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/docs/caf\u{e9}/")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), std::slice::from_ref(&unicode));
+
+    let (_, out, _) = run(&["ls", "--recursive", "--prefix", &format!("{p}/")]);
+    assert_eq!(out["count"], 4);
+    assert!(strings(&out["prefixes"]).is_empty());
+    let all = keys_of(&out);
+    assert!(all.contains(&unicode) && all.contains(&awkward) && all.contains(&big_key), "{all:?}");
+    assert_eq!(
+        out["objects"].as_array().unwrap().iter().find(|o| o["key"] == big_key.as_str()).unwrap()["size"],
+        big_bytes.len()
+    );
+
+    // ...and in pages. One entry at a time, every page is followed; with a limit, it stops and says how to go on.
+    let page = [("SLIPLANE_S3_PAGE_SIZE", "2")];
+    let prefix = format!("{p}/");
+    let (code, out, err) = json_with(
+        &env,
+        &["s3", "ls", "-a", "work", "--bucket", &t.bucket, "--recursive", "--limit", "0", "--prefix", &prefix],
+        &page,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["count"], 4);
+    assert_eq!(out["truncated"], false);
+    let (_, first, _) = json_with(
+        &env,
+        &["s3", "ls", "-a", "work", "--bucket", &t.bucket, "--recursive", "--limit", "3", "--prefix", &prefix],
+        &page,
+    );
+    assert_eq!((first["count"].as_u64(), first["truncated"].as_bool()), (Some(3), Some(true)));
+    let token = first["nextToken"].as_str().unwrap().to_string();
+    let (_, rest, _) = json_with(
+        &env,
+        &["s3", "ls", "-a", "work", "--bucket", &t.bucket, "--recursive", "--prefix", &prefix, "--token", &token],
+        &page,
+    );
+    assert_eq!(rest["truncated"], false);
+    let mut joined = keys_of(&first);
+    joined.extend(keys_of(&rest));
+    assert_eq!(joined, all, "pages did not add up to the listing");
+
+    // 5. Downloads, byte for byte.
+    let small_out = env.dir.join("got-small.txt");
+    let (code, out, err) = run(&["download", "--key", &awkward, "--out", small_out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["size"].as_u64()), (Some("downloaded"), Some(14)));
+    assert_eq!(std::fs::read(&small_out).unwrap(), b"hello, bucket\n");
+    let big_out = env.dir.join("got-blob.bin");
+    let (code, out, err) = run(&["download", "--key", &big_key, "--out", big_out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["size"], big_bytes.len());
+    let got = std::fs::read(&big_out).unwrap();
+    assert_eq!(sha_hex(&got), sha_hex(&big_bytes), "the download is not the upload");
+    // Nothing is left half-written beside it.
+    let leftovers: Vec<_> = std::fs::read_dir(&env.dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".part"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // Nothing at all is a file too.
+    let empty = env.dir.join("empty.txt");
+    std::fs::write(&empty, b"").unwrap();
+    let empty_key = format!("{p}/docs/empty.txt");
+    let (code, out, err) = run(&["upload", "--file", empty.to_str().unwrap(), "--key", &empty_key]);
+    assert_eq!((code, out["size"].as_u64()), (0, Some(0)), "{err}");
+    let empty_out = env.dir.join("got-empty.txt");
+    let (code, out, err) = run(&["download", "--key", &empty_key, "--out", empty_out.to_str().unwrap()]);
+    assert_eq!((code, out["size"].as_u64()), (0, Some(0)), "{err}");
+    assert_eq!(std::fs::read(&empty_out).unwrap(), b"");
+    assert_eq!(run(&["rm", "--key", &empty_key]).0, 0);
+
+    // An existing file is not replaced unless asked; an existing directory gets the key's file name.
+    let (code, _, err) = run(&["download", "--key", &awkward, "--out", small_out.to_str().unwrap()]);
+    assert_eq!(code, 6, "{err}");
+    assert_eq!(std::fs::read(&small_out).unwrap(), b"hello, bucket\n");
+    std::fs::write(&small_out, b"old").unwrap();
+    assert_eq!(run(&["download", "--key", &awkward, "--out", small_out.to_str().unwrap(), "--force"]).0, 0);
+    assert_eq!(std::fs::read(&small_out).unwrap(), b"hello, bucket\n");
+    let dir = env.dir.join("into");
+    std::fs::create_dir(&dir).unwrap();
+    assert_eq!(run(&["download", "--key", &unicode, "--out", dir.to_str().unwrap()]).0, 0);
+    assert!(dir.join("\u{fc}n\u{ef}.txt").is_file());
+
+    // To stdout the object is the output, and the receipt goes to stderr.
+    let raw =
+        env.run(&["s3", "download", "-a", "work", "--bucket", &t.bucket, "--key", &big_key, "--out", "-", "--json"]);
+    assert_eq!(raw.status.code(), Some(0));
+    assert_eq!(sha_hex(&raw.stdout), sha_hex(&big_bytes));
+    let stderr = String::from_utf8_lossy(&raw.stderr);
+    let text =
+        stderr.lines().filter(|l| !l.starts_with("warning:") && !l.starts_with("note:")).collect::<Vec<_>>().join(
+            "
+",
+        );
+    let receipt: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text:?}"));
+    assert_eq!(receipt["path"], "-");
+
+    // A key that is not there is not_found, whichever way it is asked for.
+    let (code, _, err) =
+        run(&["download", "--key", &format!("{p}/nope.txt"), "--out", env.dir.join("nope").to_str().unwrap()]);
+    assert_eq!((code, err["code"].as_str()), (4, Some("not_found")), "{err}");
+    assert!(
+        !env.dir.join("nope").exists()
+            && std::fs::read_dir(&env.dir).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".part"))
+    );
+
+    // 6. Deleting: all or nothing, and a typo is an error rather than a success.
+    let (code, _, err) = run(&["rm", "--key", &format!("{p}/top.txt"), "--key", &format!("{p}/typo.txt")]);
+    assert_eq!(code, 4, "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("typo.txt"));
+    assert_eq!(
+        keys_of(&run(&["ls", "--prefix", &format!("{p}/top")]).1),
+        [format!("{p}/top.txt")],
+        "something was deleted"
+    );
+    let (code, out, err) =
+        run(&["rm", "--key", &format!("{p}/top.txt"), "--key", &named_key, "--key", &format!("{p}/top.txt")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["count"].as_u64()), (Some("deleted"), Some(2)));
+    for k in [&awkward, &unicode, &big_key] {
+        assert_eq!(run(&["rm", "--key", k]).0, 0);
+    }
+    assert_eq!(run(&["ls", "--recursive", "--prefix", &format!("{p}/")]).1["count"], 0);
+
+    // 7. Forgetting the key: locally only, and it says how to revoke it.
+    let (code, out, err) = run(&["disconnect"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["keyId"].as_str()), (Some("disconnected"), Some("sk_1")));
+    assert!(out["note"].as_str().unwrap().contains("buckets delete-key -a work --bucket-id sb_1 --key-id sk_1"));
+    assert!(api.requests().iter().all(|r| r.method != "DELETE"), "disconnect revoked the key");
+    assert!(!std::fs::read_to_string(env.dir.join("secrets.json")).unwrap().contains(&t.secret));
+    assert_eq!(run(&["ls"]).0, 3);
+    assert_eq!(run(&["disconnect"]).1["status"], "not_connected");
+
+    // The API only ever saw the API key, and never an S3 header.
+    for r in api.requests() {
+        let auth = r.headers.iter().find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str());
+        assert_eq!(auth, Some("Bearer sl_test"), "{} {}", r.method, r.path);
+        assert!(r.headers.iter().all(|(_, v)| !v.contains(&t.access) && !v.contains(&t.secret)));
+    }
+}
+
+#[test]
+fn s3_files_against_the_mock() {
+    let s3 = start_s3(S3Opts::default());
+    files_scenario(&S3Target {
+        endpoint: s3.url.clone(),
+        bucket: "files".into(),
+        access: S3_ACCESS.into(),
+        secret: S3_SECRET.into(),
+    });
+
+    let seen = s3.requests();
+    assert!(seen.len() > 30, "{}", seen.len());
+    for r in &seen {
+        // Path-style, signed, and nothing of the API's.
+        assert!(r.target.starts_with("/files"), "{}", r.target);
+        let auth = header_of(&r.headers, "authorization").unwrap();
+        assert!(auth.starts_with(&format!("AWS4-HMAC-SHA256 Credential={S3_ACCESS}/")), "{auth}");
+        assert!(auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"), "{auth}");
+        assert!(r.headers.iter().all(|(_, v)| !v.contains("sl_test")), "the API key reached the S3 endpoint: {r:?}");
+        assert!(!r.headers.iter().any(|(k, _)| k == "x-organization-id"));
+    }
+    // A file is hashed before it is sent, so the signed payload is a real digest (never unsigned).
+    let puts: Vec<_> = seen.iter().filter(|r| r.method == "PUT").collect();
+    assert!(!puts.is_empty());
+    for r in puts {
+        let h = header_of(&r.headers, "x-amz-content-sha256").unwrap();
+        assert!(h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()), "{h}");
+        assert!(header_of(&r.headers, "content-length").is_some());
+    }
+    // Keys with spaces, plus signs and non-ASCII travel percent-encoded exactly once.
+    assert!(
+        seen.iter().any(|r| r.target.contains("hello%20world%2B1.txt")),
+        "{:?}",
+        seen.iter().map(|r| &r.target).collect::<Vec<_>>()
+    );
+    assert!(seen.iter().any(|r| r.target.contains("caf%C3%A9/%C3%BCn%C3%AF.txt")));
+}
+
+#[test]
+fn s3_files_against_a_real_server_when_one_is_named() {
+    let Ok(endpoint) = std::env::var("SLIPLANE_TEST_S3_ENDPOINT") else {
+        eprintln!("skipped: SLIPLANE_TEST_S3_ENDPOINT is not set (see the notes above the s3 tests)");
+        return;
+    };
+    let var = |k: &str, default: &str| std::env::var(k).unwrap_or_else(|_| default.to_string());
+    files_scenario(&S3Target {
+        endpoint,
+        bucket: var("SLIPLANE_TEST_S3_BUCKET", "testbucket"),
+        access: var("SLIPLANE_TEST_S3_ACCESS_KEY", "minioadmin"),
+        secret: var("SLIPLANE_TEST_S3_SECRET_KEY", "minioadmin"),
+    });
+}
+
+/// More than one page of real keys. Slow (it uploads 1,010 files, one CLI run each), so it only runs when asked for twice.
+#[test]
+fn s3_a_real_server_lists_more_than_one_page() {
+    let (Ok(endpoint), Ok(_)) = (std::env::var("SLIPLANE_TEST_S3_ENDPOINT"), std::env::var("SLIPLANE_TEST_S3_MANY"))
+    else {
+        eprintln!("skipped: needs SLIPLANE_TEST_S3_ENDPOINT and SLIPLANE_TEST_S3_MANY=1");
+        return;
+    };
+    let var = |k: &str, default: &str| std::env::var(k).unwrap_or_else(|_| default.to_string());
+    let (bucket, access, secret) = (
+        var("SLIPLANE_TEST_S3_BUCKET", "testbucket"),
+        var("SLIPLANE_TEST_S3_ACCESS_KEY", "minioadmin"),
+        var("SLIPLANE_TEST_S3_SECRET_KEY", "minioadmin"),
+    );
+    let api = api_for(&endpoint, &bucket, &access, &secret, "active");
+    let env = Env::new(&api).with_account();
+    assert_eq!(env.json(&["s3", "connect", "-a", "work", "--bucket", &bucket]).0, 0);
+    let p = format!("many-{}", std::process::id());
+    let file = env.dir.join("one.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let total = 1010;
+
+    // Eight uploaders at a time; every one is a separate run of the CLI.
+    std::thread::scope(|scope| {
+        for worker in 0..8 {
+            let (env, bucket, p, file) = (&env, &bucket, &p, &file);
+            scope.spawn(move || {
+                for i in (worker..total).step_by(8) {
+                    let key = format!("{p}/k{i:05}");
+                    let out = run_with(
+                        env,
+                        &[
+                            "s3",
+                            "upload",
+                            "-a",
+                            "work",
+                            "--bucket",
+                            bucket,
+                            "--file",
+                            file.to_str().unwrap(),
+                            "--key",
+                            &key,
+                        ],
+                        &[],
+                    );
+                    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+                }
+            });
+        }
+    });
+
+    let prefix = format!("{p}/");
+    let (code, out, err) =
+        env.json(&["s3", "ls", "-a", "work", "--bucket", &bucket, "--recursive", "--limit", "0", "--prefix", &prefix]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["count"], total, "the listing stopped at the first page");
+    let keys = keys_of(&out);
+    assert!(keys.windows(2).all(|w| w[0] < w[1]), "keys repeat or are out of order");
+    // The default limit (1000) stops with a token, and the token finishes the job.
+    let (_, first, _) = env.json(&["s3", "ls", "-a", "work", "--bucket", &bucket, "--recursive", "--prefix", &prefix]);
+    assert_eq!((first["count"].as_u64(), first["truncated"].as_bool()), (Some(1000), Some(true)));
+    let token = first["nextToken"].as_str().unwrap();
+    let (_, rest, _) = env.json(&[
+        "s3",
+        "ls",
+        "-a",
+        "work",
+        "--bucket",
+        &bucket,
+        "--recursive",
+        "--prefix",
+        &prefix,
+        "--token",
+        token,
+    ]);
+    assert_eq!(rest["count"], total - 1000);
+    assert_eq!(rest["truncated"], false);
+
+    for chunk in keys.chunks(25) {
+        let mut args = vec!["s3", "rm", "-a", "work", "--bucket", &bucket];
+        for k in chunk {
+            args.extend(["--key", k]);
+        }
+        assert_eq!(env.json(&args).0, 0);
+    }
+    assert_eq!(
+        env.json(&["s3", "ls", "-a", "work", "--bucket", &bucket, "--recursive", "--prefix", &prefix]).1["count"],
+        0
+    );
+}
+
+#[test]
+fn s3_a_key_that_is_not_active_yet_is_waited_for() {
+    let s3 = start_s3(S3Opts { reject_first: 2, ..Default::default() });
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let started = std::time::Instant::now();
+    let (code, out, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "connected");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2), "it did not wait");
+    assert_eq!(s3.requests().len(), 3, "two refusals, then the one that worked");
+}
+
+#[test]
+fn s3_a_key_that_never_activates_is_kept_and_the_retry_reuses_it() {
+    let s3 = start_s3(S3Opts { reject_first: 3, ..Default::default() });
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files", "--timeout", "2"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("did not become usable within 2s"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("InvalidAccessKeyId"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("sliplane s3 connect -a work --bucket-id sb_1"));
+    // The key was made and kept; the retry makes no second one.
+    assert!(std::fs::read_to_string(env.dir.join("secrets.json")).unwrap().contains("s3:work:sb_1"));
+    let (code, out, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files", "--timeout", "10"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["reused"], true);
+    assert_eq!(api.requests().iter().filter(|r| r.method == "POST").count(), 1);
+}
+
+#[test]
+fn s3_a_wrong_secret_is_an_auth_error_that_keeps_the_s3_code() {
+    let s3 = start_s3(S3Opts::default());
+    let api = api_for(&s3.url, "files", S3_ACCESS, "not-the-secret", "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 3, "{err}");
+    assert_eq!(err["code"], "auth_required");
+    assert!(err["detail"].as_str().unwrap().contains("SignatureDoesNotMatch"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("HTTP 403"));
+    assert!(err["remediation"].as_str().unwrap().contains("s3 disconnect"));
+    assert!(!err.to_string().contains("not-the-secret"));
+}
+
+#[test]
+fn s3_a_redirect_is_not_followed_and_nothing_is_sent_after_it() {
+    let target = start_s3(S3Opts::default());
+    let s3 = start_s3(S3Opts { redirect: Some(target.url.clone()), ..Default::default() });
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("redirect"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("HTTP 307"));
+    assert_eq!(s3.requests().len(), 1);
+    assert!(target.requests().is_empty(), "the redirect was followed: {:?}", target.requests());
+}
+
+#[test]
+fn s3_an_endpoint_that_would_send_keys_in_the_clear_costs_nothing() {
+    // Plain HTTP to anything but loopback would send signed requests, and file contents, unencrypted.
+    let api = api_for("http://s3.example.com", "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("plain HTTP"), "{err}");
+    assert!(api.requests().iter().all(|r| r.method != "POST"), "a key was made for an endpoint that cannot be used");
+}
+
+#[test]
+fn s3_a_bucket_that_is_going_away_is_refused() {
+    let s3 = start_s3(S3Opts::default());
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "queued_for_deletion");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 6, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("queued_for_deletion"));
+    assert!(api.requests().iter().all(|r| r.method != "POST"));
+}
+
+#[test]
+fn s3_arguments_are_checked_before_any_request() {
+    let api = api_for("http://127.0.0.1:9", "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let before = api.requests().len();
+    let run = |args: &[&str]| {
+        let mut all = vec!["s3"];
+        all.extend_from_slice(args);
+        env.json(&all)
+    };
+    // No bucket named.
+    assert_eq!(run(&["ls", "-a", "work"]).0, 6);
+    // No account named.
+    assert_eq!(run(&["ls", "--bucket", "files"]).0, 7);
+    // A key Git Bash mangled from "/logs/a.txt".
+    let (code, _, err) = run(&["rm", "-a", "work", "--bucket", "files", "--key", "C:/Program Files/Git/logs/a.txt"]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("Windows path"));
+    let (code, _, _) = run(&["ls", "-a", "work", "--bucket", "files", "--prefix", "C:/Program Files/Git/logs"]);
+    assert_eq!(code, 6);
+    // Empty and over-long keys; a file that is not there; a directory.
+    assert_eq!(run(&["rm", "-a", "work", "--bucket", "files", "--key", ""]).0, 6);
+    assert_eq!(run(&["rm", "-a", "work", "--bucket", "files", "--key", &"k".repeat(1025)]).0, 6);
+    assert_eq!(run(&["upload", "-a", "work", "--bucket", "files", "--file", "no-such-file.bin"]).0, 6);
+    assert_eq!(run(&["upload", "-a", "work", "--bucket", "files", "--file", env.dir.to_str().unwrap()]).0, 6);
+    assert_eq!(run(&["download", "-a", "work", "--bucket", "files", "--key", "logs/"]).0, 6);
+    assert_eq!(api.requests().len(), before, "an invalid call still made a request");
+}
+
+#[test]
+fn s3_disconnect_by_id_needs_no_network() {
+    let api = api_for("http://127.0.0.1:9", "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let before = api.requests().len();
+    let (code, out, err) = env.json(&["s3", "disconnect", "-a", "work", "--bucket-id", "sb_gone"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "not_connected");
+    assert_eq!(api.requests().len(), before);
+}
+
+#[test]
+fn s3_connect_revokes_the_key_it_cannot_keep() {
+    let s3 = start_s3(S3Opts::default());
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    // A keystore that cannot be written: the file it writes through is a directory.
+    std::fs::create_dir(env.dir.join("secrets.json.tmp")).unwrap();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("could not be stored"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("sk_1 was revoked"), "{err}");
+    assert_eq!(api.last("DELETE").path, "buckets/sb_1/keys/sk_1");
+    assert!(s3.requests().is_empty(), "the unusable key was probed");
+}
+
+// ---------------------------------------------------------------------------------------------
+// services ssh / services tunnel
+//
+// ssh and ssh-keygen are replaced by examples/fake_ssh*.rs (SLIPLANE_SSH, SLIPLANE_SSH_KEYGEN), which
+// log how they were called into env.dir/fake.log. Cargo builds the examples for `cargo test`.
+
+const SECRET_KEY: &str = "FAKE-PRIVATE-KEY-MATERIAL";
+
+fn fake_tool(name: &str) -> PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_BIN_EXE_sliplane")).parent().unwrap().join("examples");
+    let path = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    // `cargo test --test cli` builds the binary but not the examples; once per process is enough.
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        if !path.is_file() {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let status = Command::new(cargo).args(["build", "--examples", "--quiet"]).status().unwrap();
+            assert!(status.success(), "`cargo build --examples` failed");
+        }
+    });
+    assert!(path.is_file(), "{} is missing; run `cargo build --examples`", path.display());
+    path
+}
+
+fn ssh_routes() -> Vec<Route> {
+    vec![
+        (
+            "POST",
+            "ssh-keys",
+            201,
+            json!({"id": "pk_1", "name": "n", "publicKey": "k", "fingerprint": "SHA256:x", "createdAt": "2026-10-31T12:00:00Z"}),
+        ),
+        (
+            "PUT",
+            "projects/p1/services/s1/ssh-keys/pk_1",
+            200,
+            json!({"host": "127.0.0.1", "port": 2222, "username": "service_1"}),
+        ),
+        ("DELETE", "projects/p1/services/s1/ssh-keys/pk_1", 204, json!(null)),
+        ("DELETE", "ssh-keys/pk_1", 204, json!(null)),
+    ]
+}
+
+/// `services <verb> --project-id p1 --service-id s1 -a work`, then `rest`.
+fn svc_args<'a>(verb: &'a str, rest: &[&'a str]) -> Vec<&'a str> {
+    [&["services", verb, "--project-id", "p1", "--service-id", "s1", "-a", "work"][..], rest].concat()
+}
+
+fn ssh_command(env: &Env, args: &[&str]) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_sliplane"));
+    c.args(args)
+        .env("SLIPLANE_CONFIG_DIR", &env.dir)
+        .env("SLIPLANE_SECRET_STORE", "plaintext")
+        .env("SLIPLANE_API_URL", &env.api)
+        .env("SLIPLANE_SSH", fake_tool("fake_ssh"))
+        .env("SLIPLANE_SSH_KEYGEN", fake_tool("fake_ssh_keygen"))
+        .env("SLIPLANE_SSH_RETRY_MS", "20")
+        .env("FAKE_SSH_LOG", env.dir.join("fake.log"));
+    c
+}
+
+struct Ran {
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn ssh_run(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> Ran {
+    let mut c = ssh_command(env, args);
+    for (k, v) in extra {
+        c.env(k, v);
+    }
+    let out = c.output().unwrap();
+    let ran = Ran {
+        code: out.status.code().unwrap(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    };
+    assert!(!ran.stdout.contains(SECRET_KEY) && !ran.stderr.contains(SECRET_KEY), "the private key was printed");
+    ran
+}
+
+/// What the fake ssh-keygen and ssh were asked, in order.
+fn fake_calls(env: &Env) -> Vec<Value> {
+    std::fs::read_to_string(env.dir.join("fake.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn argv(call: &Value) -> Vec<String> {
+    call["argv"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect()
+}
+
+/// "METHOD path" of every request made after `before` requests.
+fn api_calls(mock: &Mock, before: usize) -> Vec<String> {
+    mock.requests()[before..].iter().map(|r| format!("{} {}", r.method, r.path)).collect()
+}
+
+const SSH_CREATE: &str = "POST ssh-keys";
+const SSH_ATTACH: &str = "PUT projects/p1/services/s1/ssh-keys/pk_1";
+const SSH_DETACH: &str = "DELETE projects/p1/services/s1/ssh-keys/pk_1";
+const SSH_DELETE: &str = "DELETE ssh-keys/pk_1";
+
+/// The `--json` error envelope on stderr: ssh's own output and warnings may precede it.
+fn envelope(stderr: &str) -> Value {
+    let lines: Vec<&str> = stderr.lines().collect();
+    let start = lines.iter().position(|l| *l == "{").unwrap_or_else(|| panic!("no envelope in: {stderr}"));
+    serde_json::from_str(&lines[start..].join("\n")).unwrap()
+}
+
+/// Unix seconds of `2026-10-31T12:00:00Z`.
+fn unix_of(t: &str) -> i64 {
+    let n = |a: usize, b: usize| t[a..b].parse::<i64>().unwrap();
+    let (y, m, d) = (n(0, 4), n(5, 7), n(8, 10));
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+    days * 86400 + n(11, 13) * 3600 + n(14, 16) * 60 + n(17, 19)
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+#[test]
+fn ssh_runs_a_command_and_removes_the_key() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "ls", "-la", "/app"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    // The command's own output, untouched: nothing of ours around it.
+    assert_eq!(ran.stdout, "fake-ssh stdout\n");
+    assert_eq!(ran.stderr.lines().last(), Some("fake-ssh stderr"), "{}", ran.stderr);
+    assert!(!ran.stderr.contains("note:"), "a clean run says nothing extra: {}", ran.stderr);
+
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
+    let created = mock.requests()[before].body.clone().unwrap();
+    assert_eq!(created["publicKey"], "ssh-ed25519 AAAAFAKEPUBLICKEY sliplane-cli");
+    assert!(created["name"].as_str().unwrap().contains("s1"), "{created}");
+    let in_an_hour = unix_of(created["expiresAt"].as_str().unwrap()) - now();
+    assert!((3590..=3610).contains(&in_an_hour), "expiresAt is {in_an_hour}s away");
+    assert!(!created.to_string().contains(SECRET_KEY));
+
+    let calls = fake_calls(&env);
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    let keygen = argv(&calls[0]);
+    assert_eq!(&keygen[..6], ["-q", "-t", "ed25519", "-N", "", "-C"]);
+    let (probe, session) = (argv(&calls[1]), argv(&calls[2]));
+    assert_eq!(calls[1]["probe"], true);
+    assert_eq!(&probe[probe.len() - 5..], ["-T", "--", "127.0.0.1", "exit", "0"]);
+    // Not a terminal on stdin, so no terminal on the far side either, and the command arrives whole.
+    assert_eq!(&session[session.len() - 4..], ["-T", "--", "127.0.0.1", "ls -la /app"]);
+
+    for call in &calls[1..] {
+        assert_eq!(call["identityExisted"], true, "the key must exist while ssh runs");
+        let a = argv(call);
+        let at = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone());
+        assert_eq!(at("-p").as_deref(), Some("2222"));
+        assert_eq!(at("-l").as_deref(), Some("service_1"));
+        assert_eq!(&a[..2], ["-F", "none"]);
+        assert!(a.contains(&"StrictHostKeyChecking=accept-new".to_string()), "{a:?}");
+        assert!(
+            !a.iter().any(|x| x.contains("StrictHostKeyChecking=no") || x.contains("UserKnownHostsFile=/dev/null"))
+        );
+        let known = a.iter().find_map(|x| x.strip_prefix("UserKnownHostsFile=")).expect("a known_hosts of our own");
+        assert!(known.starts_with('"') && known.ends_with("known_hosts\""), "{known}");
+        // The key file is named once, as the -i value, and is gone afterwards.
+        let identity = at("-i").unwrap();
+        assert_eq!(a.iter().filter(|x| x.contains(&identity)).count(), 1);
+        assert!(!std::path::Path::new(&identity).exists(), "the key file outlived the command");
+        assert!(!std::path::Path::new(&identity).parent().unwrap().exists(), "the key directory outlived the command");
+    }
+}
+
+#[test]
+fn the_remote_status_goes_in_the_envelope_and_the_key_is_removed_anyway() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "false"]), &[("FAKE_SSH_EXIT", "3")]);
+    // Exit 1 (error), not 3: the exit codes are ours, and the remote status would collide with them.
+    assert_eq!(ran.code, 1, "{}", ran.stderr);
+    assert_eq!(ran.stdout, "fake-ssh stdout\n");
+    let err = envelope(&ran.stderr);
+    assert_eq!(err["code"], "error");
+    assert_eq!(err["error"], "The remote command exited with status 3.");
+    assert_eq!(err["detail"], "remote exit status: 3");
+    assert_eq!(
+        api_calls(&mock, before),
+        [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE],
+        "cleanup must run when the session fails"
+    );
+}
+
+#[test]
+fn an_ssh_failure_of_its_own_is_told_apart_from_a_remote_one() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("FAKE_SSH_EXIT", "255")]);
+    assert_eq!(ran.code, 1);
+    let err = envelope(&ran.stderr);
+    assert!(err["error"].as_str().unwrap().starts_with("ssh itself failed"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("service_1@127.0.0.1:2222"), "{err}");
+}
+
+#[test]
+fn a_command_keeps_its_word_boundaries_and_json_after_the_dashes_is_not_ours() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "sh", "-c", "echo $HOME; ls", "--json"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let session = argv(fake_calls(&env).last().unwrap());
+    assert_eq!(session.last().unwrap(), "sh -c 'echo $HOME; ls' --json");
+
+    // One word is a command line for the remote shell.
+    ssh_run(&env, &svc_args("ssh", &["--", "ls /app | head -1"]), &[]);
+    assert_eq!(argv(fake_calls(&env).last().unwrap()).last().unwrap(), "ls /app | head -1");
+}
+
+#[test]
+fn stdin_reaches_the_remote_command() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let mut child = ssh_command(&env, &svc_args("ssh", &["--", "cat"]))
+        .env("FAKE_SSH_ECHO_STDIN", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello from stdin\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello from stdin\nfake-ssh stdout\n");
+    let session = fake_calls(&env).pop().unwrap();
+    assert_eq!(session["stdinIsTerminal"], false);
+}
+
+#[test]
+fn the_service_is_found_by_name_first() {
+    let mut routes = two_projects();
+    routes.extend(ssh_routes());
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran =
+        ssh_run(&env, &["services", "ssh", "--project", "Main", "--service", "web", "-a", "work", "--", "true"], &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let made = api_calls(&mock, before);
+    assert_eq!(&made[made.len() - 4..], [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE], "{made:?}");
+    assert!(made[..made.len() - 4].iter().all(|c| c.starts_with("GET ")), "{made:?}");
+}
+
+#[test]
+fn it_waits_for_sshd_to_learn_the_key() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "true"]), &[("FAKE_SSH_DENY_FIRST", "3")]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(ran.stderr.contains("attempt 2 of 12") && ran.stderr.contains("attempt 4 of 12"), "{}", ran.stderr);
+    let calls = fake_calls(&env);
+    // keygen, four probes (three denied), the session.
+    assert_eq!(calls.iter().filter(|c| c["probe"] == true).count(), 4);
+    assert_eq!(calls.last().unwrap()["probe"], false);
+}
+
+#[test]
+fn it_gives_up_after_twelve_attempts_and_still_cleans_up() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("FAKE_SSH_DENY_FIRST", "99")]);
+    assert_eq!(ran.code, 1);
+    let err = envelope(&ran.stderr);
+    assert!(err["error"].as_str().unwrap().contains("12 attempts"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("Permission denied (publickey)"), "{err}");
+    assert_eq!(fake_calls(&env).iter().filter(|c| c["probe"] == true).count(), 12);
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
+}
+
+#[test]
+fn other_connection_failures_are_not_retried() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let says = "ssh: connect to host 127.0.0.1 port 2222: Connection refused";
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("FAKE_SSH_PROBE_SAYS", says)]);
+    assert_eq!(ran.code, 2, "a refused connection is a network failure: {}", ran.stderr);
+    assert_eq!(envelope(&ran.stderr)["code"], "network");
+    assert_eq!(fake_calls(&env).iter().filter(|c| c["probe"] == true).count(), 1);
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
+}
+
+#[test]
+fn a_changed_host_key_stops_the_command_and_says_how_to_forget_it() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(
+        &env,
+        &svc_args("ssh", &["--json", "--", "true"]),
+        &[("FAKE_SSH_PROBE_SAYS", "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.")],
+    );
+    assert_eq!(ran.code, 1);
+    let err = envelope(&ran.stderr);
+    assert!(err["error"].as_str().unwrap().contains("host key"), "{err}");
+    let fix = err["remediation"].as_str().unwrap();
+    assert!(fix.contains("ssh-keygen -R \"[127.0.0.1]:2222\" -f"), "{fix}");
+    assert!(fix.contains("known_hosts"), "{fix}");
+    assert_eq!(fake_calls(&env).iter().filter(|c| c["probe"] == false).count(), 0, "no session may start");
+}
+
+#[test]
+fn a_failed_attach_still_removes_the_key() {
+    let mut routes = ssh_routes();
+    routes[1] = ("PUT", "projects/p1/services/s1/ssh-keys/pk_1", 500, json!({"code": "internal"}));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[]);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
+    assert!(fake_calls(&env).iter().all(|c| c["tool"] == "ssh-keygen"), "ssh must not run without a connection");
+}
+
+#[test]
+fn a_read_only_key_fails_before_anything_is_attached() {
+    let mut routes = ssh_routes();
+    routes[0] = ("POST", "ssh-keys", 403, json!({"code": "read_only_token", "message": "read only"}));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[]);
+    assert_eq!(ran.code, 3, "{}", ran.stderr);
+    assert!(envelope(&ran.stderr)["remediation"].as_str().unwrap().contains("read-write"));
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE]);
+}
+
+#[test]
+fn a_cleanup_that_fails_is_a_warning_with_the_way_out() {
+    let mut routes = ssh_routes();
+    routes[3] = ("DELETE", "ssh-keys/pk_1", 500, json!({"code": "internal"}));
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "true"]), &[]);
+    // The session worked, so the command did; the leftover is reported, not swallowed.
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(ran.stderr.contains("warning: could not delete the temporary SSH key"), "{}", ran.stderr);
+    assert!(ran.stderr.contains("pk_1") && ran.stderr.contains("sliplane ssh-keys delete --key-id pk_1 -a work"));
+    assert!(ran.stderr.contains("deletes itself at 20"), "{}", ran.stderr);
+}
+
+#[test]
+fn a_key_that_is_already_gone_is_not_a_cleanup_failure() {
+    let mut routes = ssh_routes();
+    routes.retain(|r| r.0 != "DELETE"); // the mock answers 404 to both
+    let mock = mock_with(routes);
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--", "true"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(!ran.stderr.contains("could not"), "{}", ran.stderr);
+}
+
+#[test]
+fn missing_openssh_is_reported_before_anything_is_created() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let empty = env.dir.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+
+    let mut c = ssh_command(&env, &svc_args("ssh", &["--json", "--", "true"]));
+    c.env_remove("SLIPLANE_SSH").env_remove("SLIPLANE_SSH_KEYGEN").env("PATH", &empty);
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = envelope(&String::from_utf8_lossy(&out.stderr));
+    assert!(err["error"].as_str().unwrap().contains("ssh was not found"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("OpenSSH"), "{err}");
+
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--", "true"]), &[("SLIPLANE_SSH", "/no/such/ssh")]);
+    assert_eq!(ran.code, 6);
+    assert_eq!(api_calls(&mock, before), Vec::<String>::new(), "nothing may be created without ssh");
+}
+
+#[test]
+fn the_key_lifetime_is_a_flag_with_limits() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--ttl", "30m", "--", "true"]), &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let created = mock.requests()[before].body.clone().unwrap();
+    let ahead = unix_of(created["expiresAt"].as_str().unwrap()) - now();
+    assert!((1790..=1810).contains(&ahead), "{ahead}");
+
+    let before = mock.requests().len();
+    for bad in ["2m", "31d", "soon"] {
+        let ran = ssh_run(&env, &svc_args("ssh", &["--json", "--ttl", bad, "--", "true"]), &[]);
+        assert_eq!(ran.code, 6, "--ttl {bad}: {}", ran.stderr);
+    }
+    assert_eq!(api_calls(&mock, before), Vec::<String>::new());
+}
+
+#[test]
+fn ssh_needs_a_service_and_an_account() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let ran = ssh_run(&env, &["services", "ssh", "-a", "work", "--json"], &[]);
+    assert_eq!(ran.code, 6, "{}", ran.stderr);
+    let ran = ssh_run(&env, &["services", "ssh", "--service-id", "s1", "--project-id", "p1", "--json"], &[]);
+    assert_eq!(ran.code, 7, "{}", ran.stderr);
+    assert_eq!(fake_calls(&env).len(), 0);
+}
+
+#[test]
+fn a_tunnel_reports_when_it_is_up_and_closes_with_the_time_limit() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let port = free_port().to_string();
+    let args = svc_args("tunnel", &["--local-port", &port, "--remote-port", "5432", "--for", "2s", "--json"]);
+    let ran = ssh_run(&env, &args, &[("FAKE_SSH_TUNNEL_SECONDS", "60")]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let up: Value = serde_json::from_str(&ran.stdout).unwrap();
+    assert_eq!(up["status"], "listening");
+    assert_eq!(up["local"], format!("127.0.0.1:{port}"));
+    assert!(up["remote"].as_str().unwrap().starts_with("localhost:5432"), "{up}");
+    assert!(ran.stderr.contains("--for elapsed"), "{}", ran.stderr);
+
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
+    let tunnel = argv(fake_calls(&env).last().unwrap());
+    let joined = tunnel.join(" ");
+    assert!(joined.contains("-N -T"), "{joined}");
+    assert!(joined.contains("ExitOnForwardFailure=yes"), "{joined}");
+    assert!(joined.ends_with(&format!("-L 127.0.0.1:{port}:localhost:5432 -- 127.0.0.1")), "{joined}");
+}
+
+#[test]
+fn a_tunnel_refuses_a_port_that_is_taken_and_a_tunnel_that_fails_is_an_error() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port().to_string();
+    let ran = ssh_run(&env, &svc_args("tunnel", &["--local-port", &port, "--remote-port", "80", "--json"]), &[]);
+    assert_eq!(ran.code, 6, "{}", ran.stderr);
+    assert!(envelope(&ran.stderr)["error"].as_str().unwrap().contains("already in use"));
+    assert_eq!(api_calls(&mock, before), Vec::<String>::new());
+    drop(taken);
+
+    let port = free_port().to_string();
+    let args = svc_args("tunnel", &["--local-port", &port, "--remote-port", "80", "--json"]);
+    let ran = ssh_run(&env, &args, &[("FAKE_SSH_TUNNEL_EXIT", "255")]);
+    assert_eq!(ran.code, 1, "{}", ran.stderr);
+    assert!(envelope(&ran.stderr)["error"].as_str().unwrap().contains("before the tunnel was up"));
+    assert!(ran.stdout.is_empty(), "nothing was listening: {}", ran.stdout);
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
+}
+
+#[test]
+fn tunnel_ports_are_checked_by_the_parser() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    for args in [
+        svc_args("tunnel", &["--local-port", "0", "--remote-port", "80", "--json"]),
+        svc_args("tunnel", &["--local-port", "70000", "--remote-port", "80", "--json"]),
+        svc_args("tunnel", &["--local-port", "8080", "--json"]),
+    ] {
+        let ran = ssh_run(&env, &args, &[]);
+        assert_eq!(ran.code, 6, "{args:?}: {}", ran.stderr);
+    }
+}
+
+/// Stops a running `sliplane` the way an agent or a service manager would.
+#[cfg(unix)]
+fn terminate(child: &std::process::Child) {
+    use nix::sys::signal::{Signal, kill};
+    kill(nix::unistd::Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
+}
+
+#[cfg(unix)]
+fn wait_for(path: &std::path::Path) {
+    for _ in 0..600 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("{} never appeared", path.display());
+}
+
+#[cfg(unix)]
+#[test]
+fn termination_during_a_session_still_removes_the_key() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let child = ssh_command(&env, &svc_args("ssh", &["--json", "--", "sleep", "100"]))
+        .env("FAKE_SSH_HANG", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for(&env.dir.join("fake.log.started"));
+    terminate(&child);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(envelope(&stderr)["error"].as_str().unwrap().contains("Interrupted"), "{stderr}");
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
+}
+
+#[cfg(unix)]
+#[test]
+fn terminating_a_tunnel_closes_it_cleanly() {
+    let mock = mock_with(ssh_routes());
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let port = free_port().to_string();
+    let mut child = ssh_command(&env, &svc_args("tunnel", &["--local-port", &port, "--remote-port", "80", "--json"]))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The announcement is the first line of output, pretty-printed JSON: read up to its closing brace.
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut announcement = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(out.read_line(&mut line).unwrap() > 0, "the tunnel never announced itself");
+        announcement.push_str(&line);
+        if line.trim_end() == "}" {
+            break;
+        }
+    }
+    assert_eq!(serde_json::from_str::<Value>(&announcement).unwrap()["status"], "listening");
+    terminate(&child);
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(api_calls(&mock, before), [SSH_CREATE, SSH_ATTACH, SSH_DETACH, SSH_DELETE]);
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -5,80 +5,90 @@
 [![Docs](https://img.shields.io/badge/docs-online-success)](https://spacecorps.github.io/Sliplane-Cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A blazing fast, native command-line tool and agent interface for the [Sliplane](https://sliplane.io) cloud hosting platform API (v0, OpenAPI spec 0.11.0). Built in Rust for developers and autonomous AI workflows.
+Manage [Sliplane](https://sliplane.io) servers, services, PostgreSQL databases and S3 buckets from your terminal, or let an AI agent do it. A single static binary built in Rust, covering the whole Sliplane API (v0, OpenAPI spec 0.11.0).
+
+## Install
+
+macOS, Linux, and WSL:
+
+```sh
+curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex
+```
+
+Open a new terminal and check it worked with `sliplane --version`. No admin rights needed: the installer downloads the binary for your platform, verifies its SHA-256 checksum, and puts it in `~/.sliplane-cli/bin` (Windows: `%LOCALAPPDATA%\sliplane-cli\bin`). To update, run `sliplane update` (`sliplane update --check` only tells you whether there is a newer release), or run the installer again.
+
+<details>
+<summary>Other ways to install, pin a version, or uninstall</summary>
+
+**A specific version.** Pass it to the installer, or from a working install run `sliplane update --version v1.3.0` (it can also go back to an older release; plain `sliplane update` never does). Releases up to 1.2.0 have no `checksums.txt`, so neither will install them.
+
+```sh
+curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh -s -- 1.3.0
+```
+
+```powershell
+$env:SLIPLANE_VERSION = '1.3.0'; irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex
+```
+
+**Another directory.** Set `SLIPLANE_INSTALL_DIR` before running the installer. On Windows, `SLIPLANE_NO_PATH=1` leaves your PATH alone; on macOS and Linux the installer asks before it edits your shell profile (`--setup-path` says yes without asking, `--non-interactive` says no).
+
+**By hand.** Download the archive for your platform from the [releases page](https://github.com/SpaceCorps/Sliplane-Cli/releases/latest), check it against `checksums.txt`, and put `sliplane` anywhere on your PATH. Release files are named `sliplane-vX.Y.Z-<target>.tar.gz` (`.zip` on Windows) for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` and `x86_64-pc-windows-msvc`. You can also verify where a file came from with `gh attestation verify <file> --repo SpaceCorps/Sliplane-Cli`.
+
+**From source.** `cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked`
+
+**Uninstall.** Run `sliplane accounts remove <name>` for each account (it deletes the stored key), then delete the install directory.
+
+**Using the official `sliplane` CLI too?** Both are called `sliplane`. This installer uses its own directory and the two keep separate settings, but whichever directory comes first on your PATH wins. The installer tells you if another `sliplane` shadows this one.
+
+</details>
+
+## Install with your coding agent
+
+Paste this into Claude Code, Codex, Cursor, or any other coding agent:
+
+```text
+Install the Sliplane CLI on my machine, not in a sandbox or container. On macOS, Linux or WSL run `curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh`; on Windows run `irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex` in PowerShell. Make sure the install directory is on my PATH (the installer prints what to add if it isn't), confirm it works with `sliplane --version`, then run `sliplane agent-readme` and read it: it is the manual for driving this CLI. Do not ask me for my Sliplane API key or put it anywhere; tell me to run `sliplane login` myself in a terminal. If you can't run commands directly on my machine, don't install it anywhere else. Instead, give me step-by-step instructions for my OS and shell: what to paste into my terminal, how to add it to PATH, and how to check it worked.
+```
+
+## Get started
+
+```sh
+sliplane login                          # opens the API keys page; the key goes into your OS keystore
+sliplane me -a default                  # who am I, and what can this key do?
+sliplane projects list -a default
+sliplane services list -a default
+sliplane services logs --project-id prj_123 --service-id srv_abc -a default
+```
+
+Every command that talks to the API takes `--account` (`-a`). That is deliberate: a machine can hold keys for several Sliplane teams, and there is no default that could send a delete to the wrong one.
+
+## Authentication
+
+`sliplane login [name]` opens the API keys page in your browser, asks for the key without echoing it, checks it against the API, and stores it in the OS keystore (macOS Keychain, Windows DPAPI, Linux Secret Service). The name defaults to `default`. In CI or scripts, pipe the key in:
+
+```sh
+printf '%s' "$KEY" | sliplane login ci --api-key-stdin
+```
+
+## Scripting
+
+Output is YAML. Add `--json` to any command for JSON. Errors go to stderr as a JSON envelope with a stable exit code (see [Machine-Readable Error Envelopes](#machine-readable-error-envelopes)), and the three commands that prompt (`login`, `accounts add`, `accounts remove`) refuse to when stdin is not a terminal and name the flag to use instead.
 
 ---
 
 ## Highlights
 
 - ⚡ **Sub-3ms Startup**: Compiled as a native static binary with zero runtime dependencies. Executes in ~1–3 ms (compared to ~75 ms for managed runtimes).
-- 🔐 **OS Keystore Integration**: `sliplane login` prompts for your token securely and saves it to native OS vaults (macOS Keychain, Linux Secret Service / Keyutils, Windows DPAPI).
+- 🔐 **OS Keystore Integration**: API keys live in native OS vaults (macOS Keychain, Linux Secret Service / Keyutils, Windows DPAPI), never in a config file.
 - 🌐 **Full 65-Endpoint API Coverage**: Complete command surface across compute servers, web services, managed PostgreSQL databases, S3 object storage buckets, and OAuth clients.
 - 🤖 **AI Agent Native**: Machine-readable `--json` output, standardized error envelopes with stable exit codes, and explicit `llms.txt` agent guidance.
 - 🛡️ **Safety Guardrails**: Strict account scoping protects multi-tenant setups; safeguards prevent accidental deletion of environment variables or secrets.
-
----
-
-## Installation
-
-### Using Cargo
-
-```bash
-cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked
-```
-
-### Pre-built Standalone Binaries
-
-Download standalone binary archives directly from the [GitHub Releases](https://github.com/SpaceCorps/Sliplane-Cli/releases/latest) page:
-
-| Platform | Architecture | Binary Package |
-|:---|:---|:---|
-| **macOS** | Apple Silicon (`aarch64`) | [`sliplane-v1.2.0-aarch64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-aarch64-apple-darwin.tar.gz) |
-| **macOS** | Intel (`x86_64`) | [`sliplane-v1.2.0-x86_64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-apple-darwin.tar.gz) |
-| **Linux** | x86_64 (musl static) | [`sliplane-v1.2.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-unknown-linux-musl.tar.gz) |
-| **Windows**| x64 (MSVC) | [`sliplane-v1.2.0-x86_64-pc-windows-msvc.zip`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-pc-windows-msvc.zip) |
-
----
-
-## Quickstart
-
-### 1. Authenticate
-
-Run `sliplane login` to launch your browser, copy your API token, verify it against `GET /v0/me`, and store it in your OS keystore:
-
-```bash
-# Interactive browser login (saved under account 'default')
-sliplane login
-
-# Log in with a specific account name
-sliplane login staging
-
-# Headless / CI pipeline login (reads token from stdin with no shell history trace)
-echo "$SLIPLANE_API_KEY" | sliplane login ci --api-key-stdin
-```
-
-### 2. Verify Identity & List Resources
-
-```bash
-# Verify your token identity
-sliplane me -a default
-
-# List all projects
-sliplane projects list -a default
-
-# View compute servers
-sliplane servers list -a default
-```
-
-### 3. Deploy & Manage Services
-
-```bash
-# Deploy a web service
-sliplane services deploy --project-id prj_123 --service-id srv_abc -a default
-
-# Stream live container logs
-sliplane services logs --project-id prj_123 --service-id srv_abc -a default
-```
 
 ---
 
@@ -95,6 +105,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 | `sliplane login [name]` | Interactively authenticate with your API token and save it to the OS keystore |
 | `sliplane me` | Query identity, organization and the token's scopes (e.g. `services:write`, `secrets:read`) |
 | `sliplane version` | CLI version and the API spec it targets |
+| `sliplane update [--check] [--version vX.Y.Z]` | Update this executable to the latest release (or the named one) after verifying its SHA-256 checksum. `--check` only reports. Needs no account; never runs by itself |
 | `sliplane completion <shell>` | Shell completion script for bash, zsh, fish, powershell or elvish |
 | `sliplane accounts list [--check]` | List configured accounts (pass `--check` to verify token validity) |
 | `sliplane accounts test <name>` | Test credentials for a specific account |
@@ -124,7 +135,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 |:---|:---|
 | `sliplane services list --project-id <id>` | List services within a project |
 | `sliplane services get --project-id <p> --service-id <s>` | Fetch detailed service configuration |
-| `sliplane services create --project-id <p> (--image <img> \| --repo <r>)` | Deploy a new container service |
+| `sliplane services create --project-id <p> (--image <img> \| --repo <r>)` | Deploy a new container service. Docker Hub shorthand is expanded (`nginx` is `docker.io/library/nginx:latest`, `user/app` is `docker.io/user/app:latest`); a reference with a registry host is sent as written |
 | `sliplane services update --project-id <p> --service-id <s>` | Update service deployment settings (see safeguards below) |
 | `sliplane services deploy --project-id <p> --service-id <s> [--wait]` | Trigger immediate redeployment; `--wait` blocks until it succeeds or fails |
 | `sliplane services logs --project-id <p> --service-id <s> [--since 30m] [--to <ts>]` | Read container logs (paginated, 500 lines per call) |
@@ -137,6 +148,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 | `sliplane services attach-volume --project-id <p> --service-id <s> --volume <id-or-name>:/path` | Mount a volume and redeploy |
 | `sliplane services update-volume --project-id <p> --service-id <s> --volume-id <v> --mount-path /path` | Change a mount path and redeploy |
 | `sliplane services detach-volume --project-id <p> --service-id <s> --volume-id <v>` | Unmount a volume and redeploy (the data is kept) |
+| `sliplane services create\|update … --env-file <path> --secret-env-file <path>` | Read plain / secret variables from dotenv files (repeatable; also on `presets deploy`). `KEY=VALUE`, `#` comments, quotes, no interpolation; a bare `KEY` is an error. The command line wins over files. Values never reach argv or error messages |
 
 ### Presets (one-click apps)
 
@@ -174,6 +186,19 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane buckets keys --bucket-id <id>` | List S3 access keys |
 | `sliplane buckets create-key --bucket-id <id> --name <label>` | Generate scoped S3 access key and secret |
 
+### Files in a Bucket (S3)
+
+Objects are reached over the S3 protocol with an **S3 key of their own**, not with the API key. `s3 connect` makes that key once per bucket and keeps it in the OS keystore; the other `s3` commands read it from there. The key pair is never printed, never put on a command line and never written to `config.yaml`, and the API key is never sent to the bucket's endpoint. Everything takes `--bucket <name>` or `--bucket-id <id>`.
+
+| Command | Description |
+|:---|:---|
+| `sliplane s3 connect --bucket <name> [--timeout 60]` | Create an S3 key for the bucket, store it in the keystore, wait until it works. Reuses a stored key |
+| `sliplane s3 ls --bucket <name> [--prefix <p>] [--recursive] [--limit N] [--token T]` | List files (key, size, lastModified, etag), folded at `/` unless `--recursive`. A truncated listing returns a `nextToken` |
+| `sliplane s3 upload --bucket <name> --file <path> [--key <k>] [--content-type <mime>] [--force]` | Upload one file in a single request (up to 5 GiB). Refuses to replace an object without `--force` |
+| `sliplane s3 download --bucket <name> --key <k> [--out <path> \| -] [--force]` | Download one file; `--out -` streams it to stdout. Refuses to replace a local file without `--force` |
+| `sliplane s3 rm --bucket <name> --key <k> [--key <k2> ...]` | Delete files. Every key must exist or nothing is deleted. Asks nothing |
+| `sliplane s3 disconnect --bucket <name>` | Forget the stored S3 key. This does **not** revoke it; `buckets delete-key` does |
+
 ### SSH Access & Pricing
 
 | Command | Description |
@@ -184,7 +209,17 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane services ssh-keys --project-id <p> --service-id <s>` | List the keys attached to a service |
 | `sliplane services attach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Attach a key; prints the host, port and username to connect with |
 | `sliplane services detach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Detach a key |
+| `sliplane services ssh --service <name> [--ttl 1h] [-- <command>...]` | Run a command on a service, or open a shell, over OpenSSH with a key that exists only for the session |
+| `sliplane services tunnel --service <name> --local-port <n> --remote-port <n> [--for 30m] [--ttl 1h]` | Forward `127.0.0.1:<local>` to `localhost:<remote>` inside a service until interrupted (or `--for` elapses) |
 | `sliplane pricing` | Standard prices for servers, Postgres and object storage (excl. tax) |
+
+### Registry Credentials
+
+| Command | Description |
+|:---|:---|
+| `sliplane credentials list \| get --credential-id <id>` | List registry credentials, or read one (the token is never returned) |
+| `printf %s "$TOKEN" \| sliplane credentials create --name <n> --type <ghcr\|dockerhub\|dhi\|generic> --username <u> --token-stdin` | Store registry credentials with the token on stdin, out of argv and shell history. `--token <value>` still works but prints a warning. Refuses at once if stdin is a terminal with nothing piped |
+| `sliplane credentials update \| delete --credential-id <id>` | Rename or delete credentials |
 
 ---
 
@@ -229,6 +264,14 @@ sliplane agent-readme          # Human-readable markdown guide
 sliplane agent-readme --json   # Machine-readable rules and schemas
 ```
 
+Point a project's coding agent at the manual with `sliplane agent init`. It writes a short section between `<!-- sliplane:begin -->` and `<!-- sliplane:end -->` markers into `AGENTS.md` (or `--file CLAUDE.md`) in the current directory: run `sliplane agent-readme`, always pass `--account`, never ask for an API key, use `--json` for machines. It needs no account or network, creates the file if it is missing, replaces its own section in place on a re-run and leaves everything outside the markers untouched, and refuses to write outside the current directory. `--print` shows the section and writes nothing.
+
+```bash
+sliplane agent init                       # AGENTS.md
+sliplane agent init --file CLAUDE.md      # Claude Code
+sliplane agent init --print               # show it, write nothing
+```
+
 For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.io/Sliplane-Cli/llms.txt) and [llms-full.txt](https://spacecorps.github.io/Sliplane-Cli/llms-full.txt).
 
 ---
@@ -239,6 +282,7 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - Passing `--env` to `services update` replaces the entire environment array. The CLI warns and aborts if unmentioned variables would be dropped.
    - Use `--merge-env` to preserve unmentioned variables, or `--replace-env` if removal was intentional.
    - Use `services set-env` to change a single variable safely.
+   - `--env-file` and `--secret-env-file` feed the same list, so every protection above applies to variables read from files.
 2. **Preserving Secrets**:
    - In Sliplane, secret values are write-only and read back as empty strings. `--merge-env` safely retains existing secrets without exposing or overwriting them.
    - API keys have per-area permissions, and **Secrets: Read** is one of them. Without it *every* environment value and database password reads back empty, not only the secret ones, so `--merge-env` would overwrite plain variables with nothing. The CLI refuses that (`auth_required`) and points you to `services set-env` or a key with Secrets: Read. `sliplane me` lists a key's scopes, and `accounts add` / `accounts test` warn when `secrets:read` is missing.
@@ -248,7 +292,13 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - `--volume my-data:/data` automatically binds to an existing server volume named `my-data` rather than creating duplicates.
 5. **Windows Shells**:
    - Run from PowerShell or `cmd.exe`. Avoid Git Bash / MSYS, which automatically rewrites Unix-style path arguments (`/health` &rarr; `C:/Program Files/Git/...`).
-6. **Running SQL (`postgres query`)**:
+6. **SSH and Tunnels** (`services ssh`, `services tunnel`; need `ssh` and `ssh-keygen` from OpenSSH on `PATH`, and a read-write key):
+   - Each run makes a throwaway ed25519 key, registers it with an expiry (`--ttl`, default 1 hour, the fallback if the process is killed), attaches it to the service, runs `ssh`, and then always detaches and deletes the key and removes the private key from disk. A cleanup step that fails is a `warning:` on stderr with the commands that finish the job.
+   - `sliplane services ssh --service web -a work -- ls -la /app` runs non-interactively. stdout and stderr are the command's own, nothing of ours is added, and no terminal is allocated unless stdin is one. A non-zero remote status is exit code 1 with `remote exit status: N` in the error `detail`: the remote status is not passed through, because exit codes 1-7 are this CLI's.
+   - Several words after `--` are run as given; a single word is a command line for the remote shell (`-- 'ls | head'`).
+   - Host keys are trusted on first use and then checked: they live in `known_hosts` next to `config.yaml`, never in `~/.ssh`. A changed key stops the command and prints the `ssh-keygen -R` that forgets the old one.
+   - The tunnel prints one `status: listening` object on stdout once the local port is up, then runs until it is interrupted (Ctrl-C, SIGTERM) or `--for` elapses. A hard kill (SIGKILL, or ending the process on Windows) cannot clean up; the key then expires on its own.
+7. **Running SQL (`postgres query`)**:
    - It connects to the database itself, with the credentials `postgres get` returns, so the key needs **Secrets: Read** (without it the password reads back empty and the command says so). The connection is always TLS with the certificate checked against the host name (libpq's `verify-full`), logs in with SCRAM-SHA-256, and runs your SQL with the Simple Query protocol: several statements in one `--sql` run as one transaction, and each gets its own result.
    - **The session is read-only unless you pass `--write`.** A write without it fails with SQLSTATE `25006` and an error that says to add `--write`. This is a guard against accidents, not a sandbox: SQL can lift it (`BEGIN READ WRITE`), so the database role's privileges are the real boundary.
    - Rows are data: `columns` (name, Postgres type, OID) and `rows` as objects. `bool`, `int2/4/8`, `float4/8`, `json` and `jsonb` become JSON values, `NULL` is `null`, and everything else - `numeric` included, so no precision is lost - is the text Postgres prints. A repeated column name gets a distinct key (`a`, `a_2`) and a warning. At most `--max-rows` (1000) rows are kept per statement; `rowCount` still counts all of them and `truncated` says so. `--timeout` (30s) is also the server's `statement_timeout`.
@@ -266,6 +316,8 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
 | `SLIPLANE_API_URL` | Override the API base URL (useful for integration testing against mocks) | `https://ctrl.sliplane.io/v0` |
 | `SLIPLANE_PRESETS_URL` | Override the preset catalog URL (same purpose) | `https://sliplane.io/api/presets` |
 | `SLIPLANE_PG_CA_FILE` | PEM file with one more CA certificate that `postgres query` trusts, for a database whose certificate is signed by a private CA (a testing aid). Host name checking stays on | Mozilla's roots only |
+| `SLIPLANE_SSH`, `SLIPLANE_SSH_KEYGEN` | Use this `ssh` / `ssh-keygen` program instead of the one on `PATH` (the tests use fakes) | looked up on `PATH` |
+| `SLIPLANE_SSH_RETRY_MS` | Milliseconds between the checks that sshd has accepted the new key (12 tries) | `5000` |
 
 ---
 
