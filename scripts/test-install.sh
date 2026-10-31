@@ -64,7 +64,8 @@ check 'idempotent re-install'
 printf 'previous install' > "$SLIPLANE_INSTALL_DIR/sliplane"
 chmod 755 "$SLIPLANE_INSTALL_DIR/sliplane"
 cp "$release/checksums.txt" "$work/checksums.good"
-sed 's/^./0/' "$work/checksums.good" > "$release/checksums.txt"
+# "x" is not a hex digit, so unlike swapping in another digit this can never reproduce the real hash.
+sed 's/^./x/' "$work/checksums.good" > "$release/checksums.txt"
 if out=$(install "$version" --non-interactive 2>&1); then die 'tampered checksum was accepted'; fi
 case "$out" in *"Checksum verification failed"*) ;; *) die "wrong error for bad checksum: $out" ;; esac
 [ "$(cat "$SLIPLANE_INSTALL_DIR/sliplane")" = 'previous install' ] || die 'failed install changed the existing binary'

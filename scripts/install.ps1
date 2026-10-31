@@ -7,6 +7,9 @@
 #   SLIPLANE_INSTALL_DIR    where to put sliplane.exe (default: %LOCALAPPDATA%\sliplane-cli\bin)
 #   SLIPLANE_NO_PATH=1      do not add the install directory to your user PATH
 #   SLIPLANE_RELEASES_URL   a mirror of the GitHub releases page, for air-gapped installs and tests
+#
+# Written for Windows, following the flow of install.sh, which is adapted from the official Sliplane
+# CLI's installer (Apache License 2.0, Copyright 2026 Sliplane GmbH); see THIRD_PARTY_NOTICES.md.
 
 $ErrorActionPreference = 'Stop'
 

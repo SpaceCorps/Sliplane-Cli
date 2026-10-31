@@ -8,6 +8,14 @@
 # Environment:
 #   SLIPLANE_INSTALL_DIR    where to put the binary (default: ~/.sliplane-cli/bin)
 #   SLIPLANE_RELEASES_URL   a mirror of the GitHub releases page, for air-gapped installs and tests
+#
+# Adapted from the installer of the official Sliplane CLI,
+# https://github.com/sliplane/cli/blob/main/scripts/install.sh
+# Copyright 2026 Sliplane GmbH, licensed under the Apache License, Version 2.0
+# (http://www.apache.org/licenses/LICENSE-2.0; a copy is in licenses/ and see THIRD_PARTY_NOTICES.md).
+# Changes: this repository's release assets and install directory; SHA-256 checksums instead of a
+# hardware-key signature; no shell completion setup; Rosetta detection; a pointer to install.ps1
+# on Windows shells; a mirror override for tests.
 set -eu
 
 fail() {
