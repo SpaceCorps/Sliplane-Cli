@@ -161,6 +161,12 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane postgres rotate-credentials --postgres-id <id>` | Rotate database access password |
 | `sliplane postgres slow-queries / top-queries` | Inspect query performance and call frequency |
 | `sliplane postgres metrics --postgres-id <id> [--range 1h \| --from <ts> --to <ts>]` | CPU, memory, disk and connection history |
+| `sliplane postgres logs --postgres-id <id> [--since 30m \| --since <rfc3339>] [--until <rfc3339>] [--limit <n>]` | Server logs of the last 24 hours; `--since` takes a duration or a timestamp |
+| `sliplane postgres allowlist show --postgres-id <id> [--my-ip [--ipv4 \| --ipv6]]` | The IP allow list, and whether the database is `open`, `restricted` or `blocked`; `--my-ip` also says whether this machine's address is allowed |
+| `sliplane postgres allowlist add --postgres-id <id> (<ip-or-cidr>... \| --my-ip [--ipv4 \| --ipv6]) [--description <text>]` | Allow addresses or ranges, keeping every other entry. `0.0.0.0/0` and `::/0` (the whole internet) need `--allow-open` |
+| `sliplane postgres allowlist remove --postgres-id <id> (<ip-or-cidr-or-id>... \| --my-ip [--ipv4 \| --ipv6])` | Remove entries by address, range or rule id; refuses to remove the last one |
+| `sliplane postgres allowlist clear --postgres-id <id>` | Remove every entry: the database then refuses all public connections. Prints what was removed and an `undo` command |
+| `sliplane postgres restore --postgres-id <id> [--timestamp <rfc3339>]` | Restore into a new database; without `--timestamp`, to the latest restorable point |
 | `sliplane buckets list` | List S3-compatible object storage buckets |
 | `sliplane buckets create --name <n> --region <r>` | Create an S3 object storage bucket |
 | `sliplane buckets keys --bucket-id <id>` | List S3 access keys |
