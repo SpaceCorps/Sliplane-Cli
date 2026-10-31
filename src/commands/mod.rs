@@ -2,6 +2,7 @@
 //! own modules (`accounts`, `services`).
 
 mod accounts;
+mod agent;
 mod credentials;
 mod login;
 mod logs;
@@ -49,6 +50,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Oauth(c) => oauth(c),
         Command::SshKeys(c) => ssh_keys(c),
         Command::Pricing(a) => print(client(&a)?.get("pricing")?),
+        Command::Agent(c) => agent::run(c),
     }
 }
 

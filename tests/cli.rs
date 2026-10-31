@@ -2140,3 +2140,176 @@ fn a_rejected_image_command_says_nothing_about_the_image() {
     assert_eq!(out.status.code(), Some(6));
     assert!(!String::from_utf8_lossy(&out.stderr).contains("note: --image"));
 }
+
+// ---------------------------------------------------------------------------------------------
+// agent init
+
+impl Env {
+    /// A fresh project directory to run in; `agent init` writes relative to the working directory.
+    fn project(&self, name: &str) -> PathBuf {
+        let dir = self.dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn run_in(&self, dir: &std::path::Path, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_sliplane"))
+            .args(args)
+            .current_dir(dir)
+            .env("SLIPLANE_CONFIG_DIR", &self.dir)
+            .env("SLIPLANE_SECRET_STORE", "plaintext")
+            .env("SLIPLANE_API_URL", &self.api)
+            .output()
+            .unwrap()
+    }
+}
+
+fn status_of(out: &Output) -> Value {
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)))
+}
+
+#[test]
+fn agent_init_creates_the_file_and_a_rerun_changes_nothing() {
+    // No account, no routes: it must not need either, nor make a request.
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("fresh");
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(status_of(&out), json!({"status": "created", "path": "AGENTS.md"}));
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with("<!-- sliplane:begin -->\n") && text.trim_end().ends_with("<!-- sliplane:end -->"));
+    for needed in ["sliplane agent-readme", "--account", "API key", "--json"] {
+        assert!(text.contains(needed), "{needed}: {text}");
+    }
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(status_of(&out)["status"], "unchanged");
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), text);
+    assert!(mock.requests().is_empty(), "agent init must not touch the network");
+}
+
+#[test]
+fn agent_init_replaces_its_section_in_place_and_keeps_everything_else() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("existing");
+    let mine_before = "# My project\n\nRules I wrote.\n\n";
+    let mine_after = "\n## Other tooling\n\n- keep me";
+    std::fs::write(
+        dir.join("AGENTS.md"),
+        format!("{mine_before}<!-- sliplane:begin -->\nan old, stale version\n<!-- sliplane:end -->{mine_after}"),
+    )
+    .unwrap();
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(status_of(&out)["status"], "updated");
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with(mine_before) && text.ends_with(mine_after), "{text}");
+    assert!(text.contains("sliplane agent-readme") && !text.contains("stale"), "{text}");
+    assert_eq!(text.matches("sliplane:begin").count(), 1);
+
+    // Text with no markers gets the section appended, and the original text stays as it was.
+    std::fs::write(dir.join("CLAUDE.md"), "# Notes\nno trailing blank line").unwrap();
+    let out = env.run_in(&dir, &["agent", "init", "--file", "CLAUDE.md", "--json"]);
+    assert_eq!(status_of(&out), json!({"status": "updated", "path": "CLAUDE.md"}));
+    let text = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+    assert!(text.starts_with("# Notes\nno trailing blank line\n\n<!-- sliplane:begin -->"), "{text}");
+}
+
+#[test]
+fn agent_init_print_shows_the_section_and_writes_nothing() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("printing");
+
+    let out = env.run_in(&dir, &["agent", "init", "--print"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("<!-- sliplane:begin -->") && text.contains("sliplane agent-readme"), "{text}");
+    assert!(!dir.join("AGENTS.md").exists());
+
+    let out = env.run_in(&dir, &["agent", "init", "--print", "--json"]);
+    assert!(status_of(&out)["content"].as_str().unwrap().ends_with("<!-- sliplane:end -->"));
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "--print wrote something");
+}
+
+#[test]
+fn agent_init_will_not_write_outside_the_working_directory() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("inside");
+    let outside = env.dir.join("escaped.md");
+    let outside_path = outside.to_string_lossy().into_owned();
+
+    for file in ["../escaped.md", "sub/../../escaped.md", outside_path.as_str()] {
+        let out = env.run_in(&dir, &["agent", "init", "--file", file, "--json"]);
+        assert_eq!(out.status.code(), Some(6), "{file}: {}", String::from_utf8_lossy(&out.stdout));
+        assert!(!outside.exists(), "{file} escaped");
+    }
+
+    // Only Markdown, only regular files, and the directory has to exist.
+    for (file, why) in [("script.sh", "Markdown"), ("nowhere/AGENTS.md", "does not exist"), ("", "empty")] {
+        let out = env.run_in(&dir, &["agent", "init", "--file", file, "--json"]);
+        assert_eq!(out.status.code(), Some(6), "{file}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains(why), "{file}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    std::fs::create_dir(dir.join("dir.md")).unwrap();
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--file", "dir.md", "--json"]).status.code(), Some(6));
+
+    // A file inside a subdirectory of the working directory is fine.
+    std::fs::create_dir(dir.join("docs")).unwrap();
+    let out = env.run_in(&dir, &["agent", "init", "--file", "docs/AGENTS.md", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("docs").join("AGENTS.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_init_will_not_follow_a_symbolic_link_out_of_the_tree() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("linked");
+    let elsewhere = env.project("elsewhere");
+    std::fs::write(elsewhere.join("target.md"), "not yours").unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("target.md"), dir.join("AGENTS.md")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.join("linkdir")).unwrap();
+
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--json"]).status.code(), Some(6));
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--file", "linkdir/new.md", "--json"]).status.code(), Some(6));
+    assert_eq!(std::fs::read_to_string(elsewhere.join("target.md")).unwrap(), "not yours");
+    assert!(!elsewhere.join("new.md").exists());
+}
+
+#[test]
+fn agent_init_refuses_broken_markers_and_leaves_the_file_alone() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("broken");
+    let original = "# Mine\n<!-- sliplane:begin -->\nhalf a section\n";
+    std::fs::write(dir.join("AGENTS.md"), original).unwrap();
+
+    let out = env.run_in(&dir, &["agent", "init", "--json"]);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nothing was written"));
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), original);
+
+    // Not text at all: also left alone.
+    std::fs::write(dir.join("AGENTS.md"), b"\xff\xfe binary").unwrap();
+    assert_eq!(env.run_in(&dir, &["agent", "init", "--json"]).status.code(), Some(6));
+    assert_eq!(std::fs::read(dir.join("AGENTS.md")).unwrap(), b"\xff\xfe binary");
+}
+
+#[test]
+fn agent_init_keeps_crlf_files_crlf() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    let dir = env.project("crlf");
+    std::fs::write(dir.join("AGENTS.md"), "# Mine\r\n\r\ntext\r\n").unwrap();
+    assert_eq!(status_of(&env.run_in(&dir, &["agent", "init", "--json"]))["status"], "updated");
+    let text = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(text.starts_with("# Mine\r\n\r\ntext\r\n\r\n<!-- sliplane:begin -->\r\n"), "{text:?}");
+    assert!(!text.replace("\r\n", "").contains('\n'), "mixed line endings: {text:?}");
+    assert_eq!(status_of(&env.run_in(&dir, &["agent", "init", "--json"]))["status"], "unchanged");
+}

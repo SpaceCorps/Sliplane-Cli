@@ -42,6 +42,7 @@ const RULES: &[&str] = &[
     "'presets deploy' prints the passwords it generates once and the API cannot give them back. Record them where the human told you to, and never in source, logs or commits.",
     "Use --json when you are going to parse the output.",
     "Keep secrets out of argv: secret variables go in a file for --secret-env-file, and a registry token is piped to 'credentials create --token-stdin'.",
+    "Never ask the human for an API key or put one in a command. If no account is configured, tell them to run 'sliplane login <name>' themselves.",
 ];
 
 const README: &str = r#"# sliplane - agent operating manual
@@ -79,6 +80,10 @@ later command. The key goes into the OS keystore (DPAPI on Windows, Keychain on 
 on Linux); only the name, organization id and a label ever reach `config.yaml`. Current API keys
 embed their organization (`api_rw_org_...`); `--org-id` exists only for legacy tokens that still
 need `X-Organization-ID`.
+
+**Never ask the human for an API key, and never put one in a command or the conversation.** If
+`accounts list` shows no account, tell them to run `sliplane login <name>` themselves: it opens
+the dashboard and stores the key in the OS keystore without it passing through you.
 
 `list` reports `stored` without touching the network. `--check` calls `me` once per account and
 reports `valid`, `rejected` or `unreachable` instead.
@@ -266,6 +271,20 @@ or deploys fails with HTTP 423 (`organization_maintenance`, exit code 1). Wait, 
 
 Rate limits: server creation 50/hour, server rescale 10/hour, service creation and deploys
 10/minute each, everything else 400/minute. Exceeding one exits with `rate_limited`.
+
+## Pointing a project's agent at this manual
+
+    sliplane agent init [--file AGENTS.md | --file CLAUDE.md] [--print]
+
+Writes a short section into `AGENTS.md` (or the Markdown file named by `--file`) in the current
+directory, between `<!-- sliplane:begin -->` and `<!-- sliplane:end -->`. It tells a coding agent
+to run `sliplane agent-readme` and repeats the three rules that matter most (always pass
+`--account`, never ask for an API key, `--json` for machines); it does not copy this manual, so
+it cannot go stale. It needs no account and no network. A missing file is created, a re-run
+replaces its own section in place and leaves everything outside the markers byte for byte as it
+was, and broken markers are refused rather than guessed at. It refuses a `--file` that goes up
+with `..`, leads outside the current directory, is not `.md`, or is a symbolic link. `--print`
+shows the section and writes nothing. Run it only when the human asked for it.
 
 ## Errors
 

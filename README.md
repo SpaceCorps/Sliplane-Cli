@@ -230,6 +230,14 @@ sliplane agent-readme          # Human-readable markdown guide
 sliplane agent-readme --json   # Machine-readable rules and schemas
 ```
 
+Point a project's coding agent at the manual with `sliplane agent init`. It writes a short section between `<!-- sliplane:begin -->` and `<!-- sliplane:end -->` markers into `AGENTS.md` (or `--file CLAUDE.md`) in the current directory: run `sliplane agent-readme`, always pass `--account`, never ask for an API key, use `--json` for machines. It needs no account or network, creates the file if it is missing, replaces its own section in place on a re-run and leaves everything outside the markers untouched, and refuses to write outside the current directory. `--print` shows the section and writes nothing.
+
+```bash
+sliplane agent init                       # AGENTS.md
+sliplane agent init --file CLAUDE.md      # Claude Code
+sliplane agent init --print               # show it, write nothing
+```
+
 For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.io/Sliplane-Cli/llms.txt) and [llms-full.txt](https://spacecorps.github.io/Sliplane-Cli/llms-full.txt).
 
 ---

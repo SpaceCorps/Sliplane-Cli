@@ -81,6 +81,25 @@ pub enum Command {
     SshKeys(SshKeys),
     /// List standard prices for servers, Postgres and object storage
     Pricing(Account),
+    /// Point a project's coding agent at this CLI's manual
+    #[command(subcommand)]
+    Agent(Agent),
+}
+
+// ---------------------------------------------------------------------------------------------
+// agent
+
+#[derive(Subcommand)]
+pub enum Agent {
+    /// Add a short Sliplane section to AGENTS.md (replaced in place on a re-run). Needs no account or network
+    Init {
+        /// Markdown file to write, inside the current directory (use CLAUDE.md for Claude Code)
+        #[arg(long, value_name = "PATH", default_value = "AGENTS.md")]
+        file: String,
+        /// Print the section and write nothing
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------

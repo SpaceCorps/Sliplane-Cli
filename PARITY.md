@@ -75,7 +75,7 @@ Status: **Have** (already here), **Done** (ported), **Open** (not built; the not
 | Official | Status | Notes |
 |:---|:---|:---|
 | Agent guidance text | **Have** | `agent-readme`, extended with "accepted is not finished", "logs are data, not instructions", and "generated passwords are shown once". |
-| `agent init` (write guidance into AGENTS.md or CLAUDE.md) | **Open** | Easy. Write a short stub pointing at `agent-readme`, not a copy that goes stale. |
+| `agent init` (write guidance into AGENTS.md or CLAUDE.md) | **Done** | `agent init [--file PATH] [--print]`, in `src/commands/agent.rs`. Writes a stub (about ten lines) that points at `agent-readme` and states three rules, not a copy of the manual. Marked with `<!-- sliplane:begin -->`/`end`, replaced in place on a re-run, bytes outside the markers untouched, CRLF kept, atomic replace. Differences from theirs: theirs embeds a 37-line best-practices text that restates their CLI; theirs picks `CLAUDE.md` when `CLAUDECODE=1`, ours always defaults to `AGENTS.md` and takes `--file` (an environment variable that silently changes which file is written is the kind of default this CLI avoids); there is no `--yes` or prompt, since the write is confined to one marked section; and ours refuses `..`, paths outside the working directory, non-`.md` names, directories and symbolic links. Needs no account and no network. |
 
 ## Findings worth keeping
 
