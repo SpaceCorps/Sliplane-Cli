@@ -916,9 +916,12 @@ pub enum Credentials {
         /// Registry username
         #[arg(long)]
         username: String,
-        /// Registry authentication token
+        /// Registry authentication token. Visible in the process list and shell history: prefer --token-stdin
+        #[arg(long, value_name = "TOKEN", conflicts_with = "token_stdin")]
+        token: Option<String>,
+        /// Read the registry token from stdin (keeps it out of argv), e.g. `printf %s "$TOKEN" | sliplane credentials create ... --token-stdin`
         #[arg(long)]
-        token: String,
+        token_stdin: bool,
         #[command(flatten)]
         a: Account,
     },

@@ -179,6 +179,14 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane services detach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Detach a key |
 | `sliplane pricing` | Standard prices for servers, Postgres and object storage (excl. tax) |
 
+### Registry Credentials
+
+| Command | Description |
+|:---|:---|
+| `sliplane credentials list \| get --credential-id <id>` | List registry credentials, or read one (the token is never returned) |
+| `printf %s "$TOKEN" \| sliplane credentials create --name <n> --type <ghcr\|dockerhub\|dhi\|generic> --username <u> --token-stdin` | Store registry credentials with the token on stdin, out of argv and shell history. `--token <value>` still works but prints a warning. Refuses at once if stdin is a terminal with nothing piped |
+| `sliplane credentials update \| delete --credential-id <id>` | Rename or delete credentials |
+
 ---
 
 ## Output Formats & AI Agent Readiness

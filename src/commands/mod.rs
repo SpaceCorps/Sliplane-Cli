@@ -2,6 +2,7 @@
 //! own modules (`accounts`, `services`).
 
 mod accounts;
+mod credentials;
 mod login;
 mod logs;
 mod presets;
@@ -403,9 +404,12 @@ fn credentials(c: Credentials) -> Result<()> {
     match c {
         Credentials::List(a) => print(client(&a)?.get("registry-credentials")?),
         Credentials::Get(c) => print(client(&c.a)?.get(&at(&c))?),
-        Credentials::Create { name, kind, username, token, a } => {
+        Credentials::Create { name, kind, username, token, token_stdin, a } => {
+            // Before the account is looked at: a missing token needs no account to report.
+            let token = credentials::token(token, token_stdin)?;
             let body = obj! { "name" => name, "type" => kind, "username" => username, "token" => token };
-            print(client(&a)?.post("registry-credentials", &body)?)
+            let created = client(&a)?.post("registry-credentials", &body);
+            print(created.map_err(|e| credentials::redact(e, &token))?)
         }
         Credentials::Update { c, name } => print(client(&c.a)?.patch(&at(&c), &json!({ "name": name }))?),
         Credentials::Delete(c) => {

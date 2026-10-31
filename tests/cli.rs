@@ -1898,3 +1898,133 @@ fn presets_deploy_takes_env_files_as_overrides() {
     let body = mock.last("POST").body.unwrap();
     assert_eq!(body["env"], json!([{"key": "OPENAI_API_KEY", "value": "sk-from-file", "secret": true}]));
 }
+
+// ---------------------------------------------------------------------------------------------
+// credentials create: the token on stdin
+
+impl Env {
+    /// Runs the binary with `stdin` piped to it (or closed, when None), capturing both streams.
+    fn run_with_stdin(&self, args: &[&str], stdin: Option<&[u8]>) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sliplane"))
+            .args(args)
+            .env("SLIPLANE_CONFIG_DIR", &self.dir)
+            .env("SLIPLANE_SECRET_STORE", "plaintext")
+            .env("SLIPLANE_API_URL", &self.api)
+            .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(bytes) = stdin {
+            // The child may stop reading early (an oversized token): a broken pipe is fine.
+            let _ = child.stdin.take().unwrap().write_all(bytes);
+        }
+        child.wait_with_output().unwrap()
+    }
+}
+
+const CRED_BASE: [&str; 9] =
+    ["credentials", "create", "--name", "gh", "--type", "ghcr", "--username", "octo", "--json"];
+
+fn credential_routes() -> Vec<Route> {
+    vec![
+        me(),
+        (
+            "POST",
+            "registry-credentials",
+            201,
+            json!({"id": "credential_1", "name": "gh", "type": "ghcr", "username": "octo", "createdAt": "2026-10-31T12:00:00Z"}),
+        ),
+    ]
+}
+
+#[test]
+fn credentials_token_comes_from_stdin_and_never_touches_argv() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+
+    // The line break `printf`/`echo` adds is not part of the token; a CRLF from Windows is not either.
+    let out = env.run_with_stdin(&args, Some(b"ghp_secret value \r\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        mock.last("POST").body.unwrap(),
+        json!({"name": "gh", "type": "ghcr", "username": "octo", "token": "ghp_secret value "})
+    );
+    assert!(!stderr.contains("registry token in the process list"), "stdin is the right way, so no nagging: {stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ghp_secret"), "the token was printed");
+}
+
+#[test]
+fn credentials_token_on_argv_still_works_but_warns_without_repeating_it() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token", "ghp_argv_secret", "-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(mock.last("POST").body.unwrap()["token"], "ghp_argv_secret");
+    assert!(stderr.contains("warning: --token puts the registry token in the process list"), "{stderr}");
+    assert!(stderr.contains("--token-stdin"), "{stderr}");
+    assert!(!stderr.contains("ghp_argv_secret"), "the warning must not echo the token: {stderr}");
+}
+
+#[test]
+fn credentials_token_is_required_from_exactly_one_place() {
+    let mock = Mock::start(credential_routes());
+    let env = Env::new(&mock).with_account();
+
+    // Nothing given: say how, and do not look at the account or the network.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    assert_eq!(out.status.code(), Some(6));
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert!(err["remediation"].as_str().unwrap().contains("--token-stdin"), "{err}");
+
+    // --token-stdin with nothing piped (stdin closed) must fail, not hang.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, None);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stdin was empty"));
+    let out = env.run_with_stdin(&args, Some(b"\n"));
+    assert_eq!(out.status.code(), Some(6), "a blank line is not a token");
+
+    // Both: refused by the parser.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token", "x", "--token-stdin", "-a", "work"]);
+    assert_eq!(env.run_with_stdin(&args, Some(b"y")).status.code(), Some(6));
+
+    // Oversized input is not a token.
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, Some(&vec![b'a'; 70 * 1024]));
+    assert_eq!(out.status.code(), Some(6));
+
+    assert_eq!(paths(&mock, "POST"), Vec::<String>::new(), "none of those reached the API");
+}
+
+#[test]
+fn credentials_errors_do_not_echo_the_token_back() {
+    let mock = Mock::start(vec![
+        me(),
+        (
+            "POST",
+            "registry-credentials",
+            400,
+            json!({"code": "invalid_request", "message": "token ghp_leaky is not valid"}),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let mut args = CRED_BASE.to_vec();
+    args.extend(["--token-stdin", "-a", "work"]);
+    let out = env.run_with_stdin(&args, Some(b"ghp_leaky"));
+    assert_eq!(out.status.code(), Some(6));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("ghp_leaky"), "{stderr}");
+    assert!(stderr.contains("[redacted]"), "{stderr}");
+}
