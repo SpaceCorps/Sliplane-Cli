@@ -42,6 +42,16 @@ pub enum Command {
     Login(Login),
     /// Print the operating manual for an LLM agent driving this CLI
     AgentReadme,
+    /// Print this CLI's version and the API spec it was checked against
+    Version,
+    /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
+    Completion {
+        /// The shell to generate completions for
+        shell: clap_complete::Shell,
+    },
+    /// Browse and deploy the Sliplane preset catalog (Postgres, Redis, n8n and many more)
+    #[command(subcommand)]
+    Presets(Presets),
     /// Manage Sliplane accounts and their API keys
     #[command(subcommand)]
     Accounts(Accounts),
@@ -305,6 +315,17 @@ pub struct ServiceRef {
     pub a: Account,
 }
 
+/// `--wait` for the commands that start a deploy, which the API accepts before it has finished.
+#[derive(Args)]
+pub struct WaitFlags {
+    /// Wait for the deploy to finish. Exits non-zero if it fails or does not finish in time
+    #[arg(long)]
+    pub wait: bool,
+    /// With --wait: seconds to wait before giving up (default 600)
+    #[arg(long, value_name = "SECONDS", requires = "wait", value_parser = clap::value_parser!(u64).range(1..=86400))]
+    pub timeout: Option<u64>,
+}
+
 /// Flags shared by `services create` and `services update`.
 #[derive(Args)]
 pub struct Deploy {
@@ -384,6 +405,8 @@ pub enum Services {
         #[arg(long = "volume", value_name = "VOLUME")]
         volumes: Vec<String>,
         #[command(flatten)]
+        w: WaitFlags,
+        #[command(flatten)]
         a: Account,
     },
     /// Update a service
@@ -421,17 +444,31 @@ pub enum Services {
         /// Image tag to deploy (for image-based services)
         #[arg(long)]
         tag: Option<String>,
+        #[command(flatten)]
+        w: WaitFlags,
     },
-    /// Get service logs (at most 500 lines per call, newest first back from --to)
+    /// Get service logs (at most 500 lines per call, newest first back from --to), or follow them
     Logs {
         #[command(flatten)]
         s: ServiceRef,
         /// From timestamp (Unix seconds)
-        #[arg(long, value_name = "TIMESTAMP")]
+        #[arg(long, value_name = "TIMESTAMP", conflicts_with = "since")]
         from: Option<i64>,
         /// To timestamp (Unix seconds). Page back by passing the earliest timestamp you received
-        #[arg(long, value_name = "TIMESTAMP")]
+        #[arg(long, value_name = "TIMESTAMP", conflicts_with = "follow")]
         to: Option<i64>,
+        /// Start this long ago (30s, 5m, 2h, 1d) or at an RFC 3339 timestamp, instead of --from
+        #[arg(long, value_name = "WHEN")]
+        since: Option<String>,
+        /// Keep polling and print new lines as they arrive, oldest first (JSON Lines with --json)
+        #[arg(long)]
+        follow: bool,
+        /// With --follow: seconds between polls (default 2)
+        #[arg(long, value_name = "SECONDS", requires = "follow", value_parser = clap::value_parser!(u64).range(1..=3600))]
+        interval: Option<u64>,
+        /// With --follow: stop after this long (30s, 5m, 1h) instead of running until interrupted
+        #[arg(long = "for", value_name = "DURATION", requires = "follow")]
+        follow_for: Option<String>,
     },
     /// Get service metrics
     Metrics {
@@ -532,6 +569,57 @@ pub enum Services {
 }
 
 // ---------------------------------------------------------------------------------------------
+// presets
+
+#[derive(Subcommand)]
+pub enum Presets {
+    /// List the presets. Needs no account: the catalog is public
+    List {
+        /// Only presets whose id, name, description or tag contains this text
+        #[arg(long, value_name = "TEXT")]
+        search: Option<String>,
+        /// Only presets with exactly this tag, e.g. database
+        #[arg(long)]
+        tag: Option<String>,
+    },
+    /// Show what a preset deploys: image, ports, environment, volumes. Secrets are hidden
+    Show {
+        /// The preset id (see 'sliplane presets list')
+        id: String,
+    },
+    /// Deploy a preset as a new service. Names, volumes and passwords are generated fresh each time
+    Deploy {
+        /// The preset id (see 'sliplane presets list')
+        id: String,
+        /// The ID of the project to create the service in
+        #[arg(long, value_name = "ID")]
+        project_id: String,
+        /// The ID of the server to run it on
+        #[arg(long, value_name = "ID")]
+        server_id: String,
+        /// Service name (default: the preset's name plus a random suffix)
+        #[arg(long)]
+        name: Option<String>,
+        /// Set or override an environment variable (repeatable)
+        #[arg(long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Set or override a secret environment variable (repeatable)
+        #[arg(long, value_name = "KEY=VALUE")]
+        secret_env: Vec<String>,
+        /// Do not expose the service publicly, even if the preset does (databases are public TCP by default)
+        #[arg(long)]
+        private: bool,
+        /// Print the request with secrets hidden and create nothing
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        w: WaitFlags,
+        #[command(flatten)]
+        a: Account,
+    },
+}
+
+// ---------------------------------------------------------------------------------------------
 // postgres
 
 #[derive(Args)]
@@ -581,7 +669,7 @@ pub enum Postgres {
         /// Disk size in GB: 10, 50, 100, 250, 500, 1000 (default: 10)
         #[arg(long, value_name = "SIZE")]
         disk_size_gb: Option<u32>,
-        /// Billing cycle: hourly (default), monthly, yearly
+        /// Billing cycle: hourly (default), monthly, yearly. A free 48-hour demo database (starter or base tier, bundled storage) defaults to monthly
         #[arg(long, value_name = "CYCLE")]
         billing_cycle: Option<String>,
         #[command(flatten)]

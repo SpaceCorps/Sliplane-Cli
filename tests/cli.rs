@@ -68,11 +68,18 @@ impl Mock {
                     let body = (len > 0).then(|| serde_json::from_slice(&buf).unwrap());
                     log.lock().unwrap().push(Recorded { method: method.clone(), path: path.clone(), headers, body });
 
+                    // How many times this route has been asked, this request included.
+                    let nth = log.lock().unwrap().iter().filter(|r| r.method == method && r.path == path).count();
                     let (status, resp) = routes
                         .iter()
                         .find(|(m, p, _, _)| *m == method && *p == path)
                         .map(|(_, _, s, b)| (*s, b.clone()))
                         .unwrap_or((404, json!({"code": "not_found", "message": "no route"})));
+                    // `{"__seq": [a, b, c]}` answers a, then b, then c for every call after.
+                    let resp = match resp.get("__seq").and_then(Value::as_array) {
+                        Some(seq) => seq[(nth - 1).min(seq.len() - 1)].clone(),
+                        None => resp,
+                    };
                     let text = if status == 204 { String::new() } else { resp.to_string() };
                     let _ = write!(
                         stream,
@@ -119,6 +126,7 @@ impl Env {
             .env("SLIPLANE_CONFIG_DIR", &self.dir)
             .env("SLIPLANE_SECRET_STORE", "plaintext")
             .env("SLIPLANE_API_URL", &self.api)
+            .env("SLIPLANE_PRESETS_URL", format!("{}presets", self.api))
             .output()
             .unwrap()
     }
@@ -1028,4 +1036,443 @@ fn a_missing_scope_is_not_reported_as_a_generic_403() {
     assert!(err["error"].as_str().unwrap().contains("missing a permission"), "{err}");
     assert!(err["remediation"].as_str().unwrap().contains("sliplane me"), "{err}");
     assert!(err["detail"].as_str().unwrap().contains("insufficient_scope"), "{err}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// presets
+
+fn catalog() -> Route {
+    (
+        "GET",
+        "presets",
+        200,
+        json!({
+            "generatedValues": [
+                {"placeholder": "__SLIPLANE_GENERATED_0__", "kind": "string", "length": 4},
+                {"placeholder": "__SLIPLANE_GENERATED_1__", "kind": "string", "length": 16}
+            ],
+            "presets": [
+                {"name": "PostgreSQL", "tags": ["database"], "description": "A relational database.",
+                 "volumes": [{"id": "pg-__SLIPLANE_GENERATED_0__", "name": "pg-data-__SLIPLANE_GENERATED_0__"}],
+                 "settings": {"presetId": "postgres", "name": "Postgres-__SLIPLANE_GENERATED_0__",
+                   "envs": [{"key": "POSTGRES_PASSWORD", "value": "__SLIPLANE_GENERATED_1__", "secret": false},
+                            {"key": "POSTGRES_DB", "value": "mydb", "secret": false}],
+                   "public": true, "protocol": "tcp", "deploySource": "registry",
+                   "externalDockerImage": "docker.io/library/postgres:18.6", "cmd": "",
+                   "volumes": [{"id": "pg-__SLIPLANE_GENERATED_0__", "containerMountPath": "/var/lib/postgresql"}]}},
+                {"name": "n8n", "tags": ["automation"], "description": "Workflow automation.",
+                 "volumes": [], "settings": {"presetId": "n8n", "name": "n8n-__SLIPLANE_GENERATED_0__",
+                   "healthcheckPath": "/", "envs": [{"key": "OPENAI_API_KEY", "value": "", "secret": true}],
+                   "public": true, "protocol": "http", "deploySource": "registry",
+                   "externalDockerImage": "docker.io/n8nio/n8n:2.35.7", "cmd": "", "volumes": []}}
+            ]
+        }),
+    )
+}
+
+#[test]
+fn presets_list_and_show_need_no_account_and_never_send_a_key() {
+    let mock = Mock::start(vec![catalog()]);
+    let env = Env::new(&mock);
+
+    let (code, out, err) = env.json(&["presets", "list"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.as_array().unwrap().len(), 2);
+    assert_eq!(out[0]["id"], "postgres");
+    assert_eq!(out[0]["image"], "docker.io/library/postgres:18.6");
+
+    let (_, out, _) = env.json(&["presets", "list", "--search", "autom"]);
+    assert_eq!(out.as_array().unwrap().len(), 1);
+    assert_eq!(out[0]["id"], "n8n");
+    let (_, out, _) = env.json(&["presets", "list", "--tag", "database"]);
+    assert_eq!(out[0]["id"], "postgres");
+
+    let (code, out, _) = env.json(&["presets", "show", "n8n"]);
+    assert_eq!(code, 0);
+    assert_eq!(out["env"][0]["key"], "OPENAI_API_KEY");
+    assert_eq!(out["env"][0]["required"], true);
+
+    let (code, _, err) = env.json(&["presets", "show", "nope"]);
+    assert_eq!(code, 4);
+    assert_eq!(err["remediation"], "sliplane presets list");
+
+    for r in mock.requests() {
+        assert!(!r.headers.iter().any(|(k, _)| k == "authorization"), "a key was sent to the catalog: {r:?}");
+    }
+}
+
+#[test]
+fn presets_deploy_needs_an_account_before_it_does_anything() {
+    let mock = Mock::start(vec![me(), catalog()]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["presets", "deploy", "postgres", "--project-id", "p1", "--server-id", "srv1"]);
+    assert_eq!(code, 7);
+    assert_eq!(err["code"], "no_account");
+    assert!(!mock.requests().iter().any(|r| r.path == "presets"), "the catalog was fetched without an account");
+}
+
+#[test]
+fn presets_dry_run_creates_nothing_and_hides_secrets() {
+    let mock = Mock::start(vec![me(), catalog()]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&[
+        "presets",
+        "deploy",
+        "postgres",
+        "--project-id",
+        "p1",
+        "--server-id",
+        "srv1",
+        "--dry-run",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["dryRun"], true);
+    let password = out["request"]["env"].as_array().unwrap().iter().find(|e| e["key"] == "POSTGRES_PASSWORD").unwrap();
+    assert_eq!(password["value"], "<hidden>");
+    assert!(out["warnings"][0].as_str().unwrap().contains("--private"));
+    assert!(!mock.requests().iter().any(|r| r.method == "POST"), "a dry run must not create anything");
+}
+
+#[test]
+fn presets_deploy_creates_the_service_and_prints_the_generated_secrets_once() {
+    let mock =
+        Mock::start(vec![me(), catalog(), ("POST", "projects/p1/services", 201, json!({"id": "svc1", "name": "db"}))]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&[
+        "presets",
+        "deploy",
+        "postgres",
+        "--project-id",
+        "p1",
+        "--server-id",
+        "srv1",
+        "--name",
+        "db",
+        "--private",
+        "--env",
+        "POSTGRES_DB=orders",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(body["name"], "db");
+    assert_eq!(body["serverId"], "srv1");
+    assert_eq!(body["deployment"], json!({"url": "docker.io/library/postgres:18.6"}));
+    assert_eq!(body["network"], json!({"public": false}), "--private must not expose the database");
+    let env_of = |k: &str| body["env"].as_array().unwrap().iter().find(|e| e["key"] == k).unwrap().clone();
+    assert_eq!(env_of("POSTGRES_DB")["value"], "orders", "--env overrides the preset's value");
+    assert_eq!(body["volumes"][0]["mountPath"], "/var/lib/postgresql");
+    assert!(body["volumes"][0]["name"].as_str().unwrap().starts_with("pg-data-"));
+
+    // The password that was sent is the one printed, because it can never be read back later.
+    assert_eq!(out["service"]["id"], "svc1");
+    assert_eq!(out["generated"][0]["key"], "POSTGRES_PASSWORD");
+    assert_eq!(out["generated"][0]["value"], env_of("POSTGRES_PASSWORD")["value"]);
+    assert_eq!(out["generated"][0]["value"].as_str().unwrap().len(), 16);
+    assert!(out["warnings"].is_null(), "private, so nothing to warn about: {out}");
+}
+
+#[test]
+fn presets_deploy_refuses_an_empty_required_value_without_creating_anything() {
+    let mock = Mock::start(vec![me(), catalog()]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) =
+        env.json(&["presets", "deploy", "n8n", "--project-id", "p1", "--server-id", "srv1", "-a", "work"]);
+    assert_eq!(code, 6);
+    assert!(err["remediation"].as_str().unwrap().contains("--secret-env OPENAI_API_KEY=<value>"));
+    assert!(!mock.requests().iter().any(|r| r.method == "POST"));
+}
+
+fn event(id: &str, kind: &str, message: &str) -> Value {
+    json!({"id": id, "type": kind, "message": message, "createdAt": "2026-10-31T12:00:00Z"})
+}
+
+#[test]
+fn presets_deploy_wait_reports_the_outcome() {
+    let mock = Mock::start(vec![
+        me(),
+        catalog(),
+        ("POST", "projects/p1/services", 201, json!({"id": "svc1"})),
+        (
+            "GET",
+            "projects/p1/services/svc1/events",
+            200,
+            json!([event("e1", "service_deploy_success", "Deploy succeeded")]),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let args = ["presets", "deploy", "postgres", "--project-id", "p1", "--server-id", "srv1", "--wait", "-a", "work"];
+    let (code, out, err) = env.json(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["deploy"]["status"], "live");
+    assert_eq!(out["deploy"]["event"]["id"], "e1");
+}
+
+#[test]
+fn a_failed_wait_still_prints_the_secrets_it_generated() {
+    let mock = Mock::start(vec![
+        me(),
+        catalog(),
+        ("POST", "projects/p1/services", 201, json!({"id": "svc1"})),
+        (
+            "GET",
+            "projects/p1/services/svc1/events",
+            200,
+            json!([event("e1", "service_deploy_failed", "image pull failed")]),
+        ),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let args = ["presets", "deploy", "postgres", "--project-id", "p1", "--server-id", "srv1", "--wait", "-a", "work"];
+    let (code, out, err) = env.json(&args);
+    assert_eq!(code, 1);
+    assert!(err["error"].as_str().unwrap().contains("image pull failed"), "{err}");
+    // The service exists, and its password is unrecoverable unless it was printed.
+    assert_eq!(out["service"]["id"], "svc1");
+    assert_eq!(out["generated"][0]["value"].as_str().unwrap().len(), 16);
+    assert_eq!(out["deploy"]["status"], "not_confirmed");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --wait on services
+
+const EVENTS: &str = "projects/p1/services/s1/events";
+
+fn deploy_wait(env: &Env, extra: &[&str]) -> (i32, Value, Value) {
+    let mut args = vec!["services", "deploy", "--project-id", "p1", "--service-id", "s1", "--wait", "-a", "work"];
+    args.extend_from_slice(extra);
+    env.json(&args)
+}
+
+#[test]
+fn deploy_wait_ignores_old_events_and_reports_the_new_outcome() {
+    let old = event("e0", "service_deploy_success", "an earlier deploy");
+    let new = event("e1", "service_deploy_success", "this deploy");
+    let mock = Mock::start(vec![
+        me(),
+        ("POST", "projects/p1/services/s1/deploy", 202, json!(null)),
+        ("GET", EVENTS, 200, json!({"__seq": [[old.clone()], [old, new]]})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = deploy_wait(&env, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "live");
+    assert_eq!(out["action"], "deploy");
+    assert_eq!(out["event"]["id"], "e1", "the earlier deploy's success must not count");
+
+    // The baseline is read before the deploy is triggered, or the new events would be ignored too.
+    let order: Vec<String> = mock.requests().iter().map(|r| format!("{} {}", r.method, r.path)).collect();
+    let post = order.iter().position(|r| r.ends_with("/deploy")).unwrap();
+    assert!(order[..post].iter().any(|r| r.ends_with("/events")), "{order:?}");
+}
+
+#[test]
+fn deploy_wait_polls_until_there_is_an_outcome() {
+    let old = event("e0", "service_deploy_success", "an earlier deploy");
+    let new = event("e1", "service_deploy_success", "this deploy");
+    let mock = Mock::start(vec![
+        me(),
+        ("POST", "projects/p1/services/s1/deploy", 202, json!(null)),
+        ("GET", EVENTS, 200, json!({"__seq": [[old.clone()], [old.clone()], [old, new]]})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = deploy_wait(&env, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["event"]["id"], "e1");
+    assert!(mock.requests().iter().filter(|r| r.path == EVENTS).count() >= 3);
+}
+
+#[test]
+fn deploy_wait_fails_when_the_deploy_does() {
+    let mock = Mock::start(vec![
+        me(),
+        ("POST", "projects/p1/services/s1/deploy", 202, json!(null)),
+        ("GET", EVENTS, 200, json!({"__seq": [[], [event("e1", "service_build_failed", "Dockerfile not found")]]})),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = deploy_wait(&env, &[]);
+    assert_eq!(code, 1);
+    assert!(err["error"].as_str().unwrap().contains("Dockerfile not found"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("services logs"));
+}
+
+#[test]
+fn deploy_wait_gives_up_at_the_timeout() {
+    let mock = Mock::start(vec![
+        me(),
+        ("POST", "projects/p1/services/s1/deploy", 202, json!(null)),
+        ("GET", EVENTS, 200, json!([event("e0", "service_deploy_success", "old")])),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = deploy_wait(&env, &["--timeout", "1"]);
+    assert_eq!(code, 1);
+    assert!(err["error"].as_str().unwrap().contains("No deploy outcome after 1 seconds"), "{err}");
+}
+
+#[test]
+fn timeout_without_wait_is_refused() {
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, _) =
+        env.json(&["services", "deploy", "--project-id", "p1", "--service-id", "s1", "--timeout", "5", "-a", "work"]);
+    assert_eq!(code, 6);
+}
+
+#[test]
+fn create_wait_reports_the_deploy_on_the_service() {
+    let mock = Mock::start(vec![
+        me(),
+        ("POST", "projects/p1/services", 201, json!({"id": "s9", "name": "web"})),
+        ("GET", "projects/p1/services/s9/events", 200, json!([event("e1", "service_deploy_success", "ok")])),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&[
+        "services",
+        "create",
+        "--project-id",
+        "p1",
+        "--name",
+        "web",
+        "--server-id",
+        "srv1",
+        "--image",
+        "nginx",
+        "--wait",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["id"], "s9");
+    assert_eq!(out["deploy"]["status"], "live");
+}
+
+// ---------------------------------------------------------------------------------------------
+// logs
+
+const LOGS: &str = "projects/p1/services/s1/logs";
+const LOGS_FROM_EPOCH_2000: &str = "projects/p1/services/s1/logs?from=951868800";
+const LOGS_FROM_LATEST: &str = "projects/p1/services/s1/logs?from=951868801";
+
+fn log_line(at: &str, message: &str) -> Value {
+    json!({"createdAt": at, "message": message})
+}
+
+#[test]
+fn logs_since_becomes_from() {
+    let mock = Mock::start(vec![me(), ("GET", LOGS_FROM_EPOCH_2000, 200, json!([]))]);
+    let env = Env::new(&mock).with_account();
+    let base = ["services", "logs", "--project-id", "p1", "--service-id", "s1", "-a", "work"];
+    let with = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend_from_slice(extra);
+        env.json(&args)
+    };
+
+    let (code, _, err) = with(&["--since", "2000-03-01T00:00:00Z"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("GET").path, LOGS_FROM_EPOCH_2000);
+
+    let (code, _, err) = with(&["--since", "yesterday"]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("neither a duration"));
+}
+
+#[test]
+fn logs_follow_prints_each_line_once_oldest_first() {
+    let (a, b, c) = (
+        log_line("2000-03-01T00:00:01Z", "a"),
+        log_line("2000-03-01T00:00:02Z", "b"),
+        log_line("2000-03-01T00:00:03Z", "c"),
+    );
+    let mock = Mock::start(vec![
+        me(),
+        // Newest first, as the API sends them.
+        ("GET", LOGS, 200, json!([b.clone(), a])),
+        // The next poll starts one second before the newest line seen, so "b" comes back.
+        ("GET", LOGS_FROM_LATEST, 200, json!([c, b])),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let out = env.run(&[
+        "services",
+        "logs",
+        "--project-id",
+        "p1",
+        "--service-id",
+        "s1",
+        "--follow",
+        "--interval",
+        "1",
+        "--for",
+        "1s",
+        "--json",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let lines: Vec<Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.starts_with("warning:"))
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let messages: Vec<&str> = lines.iter().map(|l| l["message"].as_str().unwrap()).collect();
+    assert_eq!(messages, ["a", "b", "c"]);
+
+    let polls: Vec<String> =
+        mock.requests().iter().filter(|r| r.path.starts_with(LOGS)).map(|r| r.path.clone()).collect();
+    assert_eq!(polls[0], LOGS);
+    assert_eq!(polls[1], LOGS_FROM_LATEST);
+}
+
+#[test]
+fn logs_follow_flags_are_checked() {
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock).with_account();
+    let base = ["services", "logs", "--project-id", "p1", "--service-id", "s1", "-a", "work"];
+    let with = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend_from_slice(extra);
+        env.json(&args)
+    };
+    assert_eq!(with(&["--follow", "--to", "5"]).0, 6, "--to pages backwards; following goes forwards");
+    assert_eq!(with(&["--interval", "3"]).0, 6, "--interval needs --follow");
+    assert_eq!(with(&["--for", "1m"]).0, 6, "--for needs --follow");
+    assert_eq!(with(&["--since", "5m", "--from", "100"]).0, 6);
+    let (code, _, err) = with(&["--follow", "--for", "5x"]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("not a duration"), "{err}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// version, completion
+
+#[test]
+fn version_reports_the_build_and_the_api_it_targets() {
+    let mock = Mock::start(vec![]);
+    let (code, out, _) = Env::new(&mock).json(&["version"]);
+    assert_eq!(code, 0);
+    assert_eq!(out["name"], "sliplane");
+    assert_eq!(out["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(out["apiSpec"], "0.11.0");
+}
+
+#[test]
+fn completion_prints_a_script_for_each_shell() {
+    let mock = Mock::start(vec![]);
+    let env = Env::new(&mock);
+    for (shell, marker) in [
+        ("bash", "complete -F"),
+        ("zsh", "#compdef sliplane"),
+        ("fish", "complete -c sliplane"),
+        ("powershell", "Register-ArgumentCompleter"),
+    ] {
+        let out = env.run(&["completion", shell]);
+        assert_eq!(out.status.code(), Some(0), "{shell}");
+        let script = String::from_utf8_lossy(&out.stdout);
+        assert!(script.contains(marker), "{shell}: {}", &script[..script.len().min(200)]);
+        assert!(script.contains("presets"), "{shell} completions should know the new commands");
+    }
+    assert_eq!(env.run(&["completion", "tcsh"]).status.code(), Some(6));
 }

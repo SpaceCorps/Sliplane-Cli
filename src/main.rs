@@ -8,8 +8,10 @@ mod config;
 mod error;
 mod output;
 mod patharg;
+mod presets;
 mod readme;
 mod secrets;
+mod timeparse;
 
 use std::process::ExitCode;
 
