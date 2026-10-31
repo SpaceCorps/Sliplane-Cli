@@ -121,6 +121,8 @@ fn locate(b: &mut BucketId) -> Result<(Target, Client)> {
     if endpoint.is_empty() {
         return Err(Error::other(format!("The API gave no endpoint for the bucket '{}'.", text("name"))));
     }
+    // Before a key is made for it: a bucket whose endpoint cannot be used should cost nothing.
+    crate::s3::check_endpoint(&endpoint)?;
     Ok((Target { account: account.name, bucket_id: text("id"), bucket_name: text("name"), endpoint }, client))
 }
 

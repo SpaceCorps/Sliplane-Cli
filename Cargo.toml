@@ -34,3 +34,7 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The S3 tests hash tens of megabytes; unoptimized SHA-256 would make them take minutes.
+[profile.dev.package.sha2]
+opt-level = 3

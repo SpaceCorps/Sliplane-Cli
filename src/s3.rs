@@ -441,6 +441,11 @@ pub fn map_error(status: u16, code: &str, message: &str, request_id: &str) -> Er
     e.detail(detail)
 }
 
+/// Refuses an endpoint this module would not talk to, before anything is created for it.
+pub fn check_endpoint(endpoint: &str) -> Result<()> {
+    parse_endpoint(endpoint).map(|_| ())
+}
+
 /// `(https, authority)`. Plain HTTP is accepted only for a loopback host: an S3 key pair and an
 /// object body must not cross the internet unencrypted because an endpoint said so.
 fn parse_endpoint(endpoint: &str) -> Result<(bool, String)> {
