@@ -2,11 +2,16 @@
 //! own modules (`accounts`, `services`).
 
 mod accounts;
+mod agent;
+mod credentials;
 mod login;
 mod logs;
+mod postgres;
 mod presets;
+mod s3;
 mod services;
 mod ssh;
+mod update;
 mod wait;
 
 use clap::CommandFactory;
@@ -49,6 +54,9 @@ pub fn run(command: Command) -> Result<()> {
         Command::Oauth(c) => oauth(c),
         Command::SshKeys(c) => ssh_keys(c),
         Command::Pricing(a) => print(client(&a)?.get("pricing")?),
+        Command::S3(c) => s3::run(c),
+        Command::Update(c) => update::run(c),
+        Command::Agent(c) => agent::run(c),
     }
 }
 
@@ -271,20 +279,15 @@ fn postgres(mut c: Postgres) -> Result<()> {
             done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "restart" })
         }
         Postgres::RotateCredentials(p) => print(client(&p.a)?.post_empty(&at(&p, "/credentials/rotate"))?),
-        Postgres::Logs { p, since, until, limit } => {
-            let q = query(&[("since", since), ("until", until), ("limit", limit.map(|l| l.to_string()))]);
-            print(client(&p.a)?.get(&at(&p, &format!("/logs{q}")))?)
-        }
+        Postgres::Logs { p, since, until, limit } => postgres::logs(&p, since, until, limit),
         Postgres::Connections(p) => print(client(&p.a)?.get(&at(&p, "/active-connections"))?),
         Postgres::Metrics { p, r } => print(client(&p.a)?.get(&at(&p, &format!("/metrics{}", metrics_query(&r))))?),
         Postgres::RelationSizes(p) => print(client(&p.a)?.get(&at(&p, "/relation-sizes"))?),
         Postgres::SlowQueries(p) => print(client(&p.a)?.get(&at(&p, "/slow-queries"))?),
         Postgres::TopQueries(p) => print(client(&p.a)?.get(&at(&p, "/top-queries"))?),
         Postgres::RestoreWindow(p) => print(client(&p.a)?.get(&at(&p, "/restore"))?),
-        Postgres::Restore { p, timestamp } => {
-            let r = client(&p.a)?.post(&at(&p, "/restore"), &json!({ "timestamp": timestamp }))?;
-            done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "restore", "timestamp" => timestamp })
-        }
+        Postgres::Restore { p, timestamp } => postgres::restore(&p, timestamp),
+        Postgres::Allowlist(c) => postgres::allowlist(c),
     }
 }
 
@@ -404,9 +407,12 @@ fn credentials(c: Credentials) -> Result<()> {
     match c {
         Credentials::List(a) => print(client(&a)?.get("registry-credentials")?),
         Credentials::Get(c) => print(client(&c.a)?.get(&at(&c))?),
-        Credentials::Create { name, kind, username, token, a } => {
+        Credentials::Create { name, kind, username, token, token_stdin, a } => {
+            // Before the account is looked at: a missing token needs no account to report.
+            let token = credentials::token(token, token_stdin)?;
             let body = obj! { "name" => name, "type" => kind, "username" => username, "token" => token };
-            print(client(&a)?.post("registry-credentials", &body)?)
+            let created = client(&a)?.post("registry-credentials", &body);
+            print(created.map_err(|e| credentials::redact(e, &token))?)
         }
         Credentials::Update { c, name } => print(client(&c.a)?.patch(&at(&c), &json!({ "name": name }))?),
         Credentials::Delete(c) => {

@@ -154,7 +154,7 @@ fn session(
     let public_key = generate_key(&tools.keygen, &identity)?;
     check_interrupt()?;
 
-    created.expires_at = timeparse::format_rfc3339(timeparse::now() + ttl.as_secs() as i64);
+    created.expires_at = timeparse::to_rfc3339(timeparse::now() + ttl.as_secs() as i64);
     let key = client.post(
         "ssh-keys",
         &obj! {
