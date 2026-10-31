@@ -35,6 +35,7 @@ export SLIPLANE_CONFIG_DIR=$(mktemp -d) SLIPLANE_SECRET_STORE=plaintext
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE=1` | Permits the plaintext fallback where no keystore exists |
 | `SLIPLANE_API_URL` | Overrides the API base URL - how `tests/cli.rs` points at its mock |
 | `SLIPLANE_PRESETS_URL` | Overrides the preset catalog URL, the same way |
+| `SLIPLANE_RELEASES_URL` | Overrides the GitHub releases page for `sliplane update` (and the installers); allows plain http |
 
 There is deliberately **no** `SLIPLANE_API_KEY`. See the invariants below.
 
@@ -61,7 +62,10 @@ src/
   secrets.rs       Keychain (security), libsecret (secret-tool), DPAPI, plaintext
   patharg.rs       refuses Windows paths that Git Bash rewrote out of "/"
   readme.rs        agent-readme text, and the API spec version this build targets
+  release.rs       `update`: latest release, download, checksum, archive extraction (no API key in reach)
+  replace.rs       `update`: stage, verify and swap the running executable
 tests/cli.rs       drives the binary against an in-process mock of the API
+tests/update.rs    drives `update` on a copy of the binary against a fake releases page
 ```
 
 ## Why it is built this way
@@ -224,7 +228,7 @@ Bump `version` in `Cargo.toml` to match the tag first. `sliplane --version` repo
 installers refuse a binary whose version differs from the tag, so a forgotten bump fails the release
 instead of shipping a mislabelled binary.
 
-**The release asset layout is a contract.** `scripts/install.sh`, `scripts/install.ps1` and any future
+**The release asset layout is a contract.** `scripts/install.sh`, `scripts/install.ps1` and
 `sliplane update` all depend on it, and so do links in the docs:
 
 - `sliplane-vX.Y.Z-<target>.tar.gz` (`.zip` for Windows), holding `sliplane-vX.Y.Z-<target>/sliplane[.exe]`,
@@ -245,6 +249,14 @@ Installers are tested offline: `sh scripts/test-install.sh <binary>` and
 installer against it (CI does this on every push). Both installers honour `SLIPLANE_RELEASES_URL`
 for that. Keep `scripts/*.sh` shellcheck-clean, and keep `.gitattributes` forcing LF on them, since a
 CRLF `install.sh` fails on `#!/bin/sh\r`.
+
+`sliplane update` (`src/release.rs` finds, downloads, verifies and extracts; `src/replace.rs` swaps the
+executable) reads that same contract: the `/releases/latest` redirect, `checksums.txt`, and the one
+archive entry `sliplane-vX.Y.Z-<target>/sliplane[.exe]`. Rename or move any of them and `update` breaks
+as the installers do; the `tests/update.rs` fake release mirrors the layout, so change both together.
+It is explicit and never automatic (see PARITY.md), it talks only to the releases page, and a binary that
+reports a version other than the tag's is refused. On Windows the running exe is renamed to
+`sliplane.old.exe`; `main` deletes that on the next start.
 
 Both CLIs are called `sliplane`, so the official Sliplane CLI and this one can fight over a PATH
 slot. This one installs to `~/.sliplane-cli/bin` and uses a `sliplane-cli` config dir (theirs is

@@ -255,6 +255,26 @@ Failures print YAML (or JSON) on stderr with a stable `code`, and exit with a ma
 `remediation` when there is a specific command that fixes the problem. Surface it rather than
 guessing, and never retry an `auth_required`.
 
+## Updating the CLI
+
+    sliplane update --check             # report the running and the latest version; change nothing
+    sliplane update                     # install the latest release if it is newer
+    sliplane update --version v1.3.0    # install exactly this release, older ones included
+
+Run it only when the human asks for an update: it replaces the executable you are running, and it
+never happens by itself. It needs no account and sends no API key; it talks only to the GitHub
+releases page. The answer is `status` (`up_to_date`, `update_available` with `--check`, or `updated`)
+with `from`, `to` and `path` (and `latest`, and a `note` when `path` looks owned by cargo, Homebrew
+or another package manager, which will not know the file changed). It never goes to an older
+release unless `--version` names one.
+
+An update downloads the archive for this platform and checks it against the release's
+`checksums.txt` before anything on disk changes; it then runs the new binary to confirm it reports
+the version it should, and swaps it in. If any step fails the installed binary is untouched.
+Releases up to 1.2.0 have no `checksums.txt` and are refused (`not_found`, exit 4): that is
+not a transient failure, so do not retry it. `network` (exit 2) is: retry once, then stop. A
+directory this user cannot write to is an `error` whose `remediation` says what to do.
+
 ## Platform notes
 
 **Windows: run from PowerShell or cmd, not Git Bash.** Git Bash rewrites arguments that look
@@ -264,4 +284,6 @@ and refuses, rather than deploying a service whose healthchecks can never pass.
 
 **`--version` belongs to the CLI.** The PostgreSQL major version on `postgres create` is
 `--pg-version`. `sliplane version` prints the CLI version and the API spec it was checked against,
-and `sliplane completion <bash|zsh|fish|powershell|elvish>` prints a shell completion script."#;
+and `sliplane completion <bash|zsh|fish|powershell|elvish>` prints a shell completion script.
+`sliplane update --version <vX.Y.Z>` is the one other place the word is an option: there it
+names the release to install."#;
