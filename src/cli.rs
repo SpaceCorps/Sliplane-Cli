@@ -84,6 +84,27 @@ pub enum Command {
     /// Upload, download, list and delete files in a bucket over the S3 protocol
     #[command(subcommand)]
     S3(S3),
+    /// Update this executable to the latest release, after verifying its SHA-256 checksum. Needs no account
+    Update(Update),
+    /// Point a project's coding agent at this CLI's manual
+    #[command(subcommand)]
+    Agent(Agent),
+}
+
+// ---------------------------------------------------------------------------------------------
+// agent
+
+#[derive(Subcommand)]
+pub enum Agent {
+    /// Add a short Sliplane section to AGENTS.md (replaced in place on a re-run). Needs no account or network
+    Init {
+        /// Markdown file to write, inside the current directory (use CLAUDE.md for Claude Code)
+        #[arg(long, value_name = "PATH", default_value = "AGENTS.md")]
+        file: String,
+        /// Print the section and write nothing
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -359,10 +380,21 @@ pub struct WaitFlags {
     pub timeout: Option<u64>,
 }
 
+/// Environment variables read from dotenv files, for the commands that take `--env`.
+#[derive(Args, Default)]
+pub struct EnvFiles {
+    /// Read plain environment variables from a dotenv file: KEY=VALUE lines, # comments, quotes, no interpolation (repeatable). A bare KEY is an error. Flags win over files
+    #[arg(long, value_name = "PATH")]
+    pub env_file: Vec<String>,
+    /// Same as --env-file, but every variable in the file is secret (repeatable). Keeps values out of argv
+    #[arg(long, value_name = "PATH")]
+    pub secret_env_file: Vec<String>,
+}
+
 /// Flags shared by `services create` and `services update`.
 #[derive(Args)]
 pub struct Deploy {
-    /// Container image URL (e.g. docker.io/library/nginx:latest)
+    /// Container image, e.g. ghcr.io/org/app:1.2. Docker Hub shorthand is expanded: nginx -> docker.io/library/nginx:latest, user/app -> docker.io/user/app:latest. A reference with a registry host is sent as written
     #[arg(long, value_name = "URL")]
     pub image: Option<String>,
     /// Repository URL (e.g. https://github.com/user/repo)
@@ -435,6 +467,8 @@ pub enum Services {
         /// Secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Volume mount as id:/path or name:/path (repeatable). A name resolves to the existing volume of that name
         #[arg(long = "volume", value_name = "VOLUME")]
         volumes: Vec<String>,
@@ -458,6 +492,8 @@ pub enum Services {
         /// Secret environment variable (repeatable). Shares one list with --env
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Allow --env/--secret-env to drop variables not listed. Without it, an update that would delete a variable is refused
         #[arg(long, conflicts_with = "merge_env")]
         replace_env: bool,
@@ -606,6 +642,7 @@ pub enum Services {
 // presets
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
 pub enum Presets {
     /// List the presets. Needs no account: the catalog is public
     List {
@@ -638,6 +675,8 @@ pub enum Presets {
         /// Set or override a secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Do not expose the service publicly, even if the preset does (databases are public TCP by default)
         #[arg(long)]
         private: bool,
@@ -742,8 +781,8 @@ pub enum Postgres {
     Logs {
         #[command(flatten)]
         p: PgId,
-        /// Earliest log timestamp (RFC 3339), clamped to the 24h retention window
-        #[arg(long, value_name = "TIMESTAMP")]
+        /// Earliest log time: how long ago (30s, 5m, 2h, 1d) or an RFC 3339 timestamp, clamped to the 24h retention window
+        #[arg(long, value_name = "DURATION|TIMESTAMP")]
         since: Option<String>,
         /// Latest log timestamp (RFC 3339, default: now)
         #[arg(long, value_name = "TIMESTAMP")]
@@ -773,10 +812,66 @@ pub enum Postgres {
     Restore {
         #[command(flatten)]
         p: PgId,
-        /// The point in time to restore to (RFC 3339), within the restore window
+        /// The point in time to restore to (RFC 3339), within the restore window (default: the latest restorable point)
         #[arg(long)]
-        timestamp: String,
+        timestamp: Option<String>,
     },
+    /// See and change which source IPs may connect (read-modify-write on the IP allow list)
+    #[command(subcommand)]
+    Allowlist(Allowlist),
+}
+
+/// `--my-ip` and the IP family to detect it in.
+#[derive(Args)]
+pub struct MyIp {
+    /// Use this machine's public address as the Sliplane API sees it (a /32 for IPv4, a /128 for IPv6)
+    #[arg(long)]
+    pub my_ip: bool,
+    /// With --my-ip: the IPv4 address (default: the family the allow list's entries already use)
+    #[arg(long, requires = "my_ip", conflicts_with = "ipv6")]
+    pub ipv4: bool,
+    /// With --my-ip: the IPv6 address
+    #[arg(long, requires = "my_ip")]
+    pub ipv6: bool,
+}
+
+#[derive(Subcommand)]
+pub enum Allowlist {
+    /// Show the IP allow list, and whether the database is open, restricted or blocked
+    Show {
+        #[command(flatten)]
+        p: PgId,
+        #[command(flatten)]
+        me: MyIp,
+    },
+    /// Allow IP addresses or CIDR ranges, keeping every entry that is already there
+    Add {
+        #[command(flatten)]
+        p: PgId,
+        /// IP address or CIDR range to allow (repeatable); a bare address becomes a /32 or /128
+        #[arg(value_name = "IP_OR_CIDR")]
+        sources: Vec<String>,
+        #[command(flatten)]
+        me: MyIp,
+        /// Label for the entries this call adds
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+        /// Permit 0.0.0.0/0 or ::/0, which opens the database to the whole internet
+        #[arg(long)]
+        allow_open: bool,
+    },
+    /// Remove entries by address, CIDR range or rule id, keeping the rest
+    Remove {
+        #[command(flatten)]
+        p: PgId,
+        /// IP address, CIDR range or rule id (pgfw_...) to remove (repeatable)
+        #[arg(value_name = "IP_OR_CIDR_OR_ID")]
+        sources: Vec<String>,
+        #[command(flatten)]
+        me: MyIp,
+    },
+    /// Remove every entry: the database then refuses all public connections
+    Clear(PgId),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -901,9 +996,12 @@ pub enum Credentials {
         /// Registry username
         #[arg(long)]
         username: String,
-        /// Registry authentication token
+        /// Registry authentication token. Visible in the process list and shell history: prefer --token-stdin
+        #[arg(long, value_name = "TOKEN", conflicts_with = "token_stdin")]
+        token: Option<String>,
+        /// Read the registry token from stdin (keeps it out of argv), e.g. `printf %s "$TOKEN" | sliplane credentials create ... --token-stdin`
         #[arg(long)]
-        token: String,
+        token_stdin: bool,
         #[command(flatten)]
         a: Account,
     },
@@ -1055,6 +1153,10 @@ impl Postgres {
             | Postgres::Logs { p, .. }
             | Postgres::Metrics { p, .. }
             | Postgres::Restore { p, .. } => Some(p),
+            Postgres::Allowlist(Allowlist::Clear(p)) => Some(p),
+            Postgres::Allowlist(Allowlist::Show { p, .. } | Allowlist::Add { p, .. } | Allowlist::Remove { p, .. }) => {
+                Some(p)
+            }
         }
     }
 }
@@ -1169,6 +1271,22 @@ impl S3 {
             | S3::Rm { s, .. } => &mut s.b,
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// update
+
+/// `--version` is this command's own option, so clap's automatic one is switched off here.
+#[derive(Args, Clone)]
+#[command(disable_version_flag = true)]
+pub struct Update {
+    /// Only report the current and the latest version; change nothing
+    #[arg(long, conflicts_with = "target_version")]
+    pub check: bool,
+
+    /// Install this release (v1.3.0 or 1.3.0) instead of the latest. The only way to go to an older one
+    #[arg(long = "version", value_name = "VERSION")]
+    pub target_version: Option<String>,
 }
 
 #[cfg(test)]

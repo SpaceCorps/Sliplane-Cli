@@ -287,6 +287,21 @@
       margin-right: 8px;
     }
 
+    .install-stack { margin-bottom: 40px; }
+    .install-stack .install-box { max-width: 780px; margin-bottom: 12px; }
+    .install-stack .install-cmd {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+    .install-note {
+      max-width: 780px;
+      margin: 0 auto;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
     .copy-btn {
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid var(--border);
@@ -570,11 +585,20 @@
       <h1>A Lightning Fast CLI for Sliplane</h1>
       <p>Manage servers, services, managed Postgres, S3 buckets, and deployments directly from your terminal or AI workflows.</p>
 
-      <div class="install-box">
-        <div class="install-cmd">
-          <span class="prefix">$</span>cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked
+      <div class="install-stack">
+        <div class="install-box">
+          <div class="install-cmd">
+            <span class="prefix">$</span>curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh
+          </div>
+          <button class="copy-btn" data-cmd="curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh" onclick="copyInstallCmd(this)">Copy</button>
         </div>
-        <button class="copy-btn" onclick="copyInstallCmd(this)">Copy</button>
+        <div class="install-box">
+          <div class="install-cmd">
+            <span class="prefix">PS&gt;</span>irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex
+          </div>
+          <button class="copy-btn" data-cmd="irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex" onclick="copyInstallCmd(this)">Copy</button>
+        </div>
+        <p class="install-note">macOS, Linux and WSL on top, Windows PowerShell below. No admin rights needed.</p>
       </div>
     </section>
 
@@ -666,8 +690,8 @@
         <div class="step-card">
           <div class="step-num">1</div>
           <h3>Install</h3>
-          <p>Install the CLI using Cargo or download prebuilt binaries from the GitHub releases page.</p>
-          <div class="step-code">cargo install --git https://github.com/SpaceCorps/Sliplane-Cli</div>
+          <p>One command downloads, checks and installs the right binary. On Windows, use the PowerShell line at the top of this page.</p>
+          <div class="step-code">curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh</div>
         </div>
 
         <div class="step-card">
@@ -810,8 +834,7 @@ sliplane buckets keys create --server-id srv_1 --bucket-id bkt_1 --name app-key 
 
   <script>
     function copyInstallCmd(btn) {
-      const cmd = "cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked";
-      navigator.clipboard.writeText(cmd).then(() => {
+      navigator.clipboard.writeText(btn.dataset.cmd).then(() => {
         btn.textContent = "Copied!";
         btn.classList.add("copied");
         setTimeout(() => {

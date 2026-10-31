@@ -15,15 +15,19 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }
 clap_complete = "4.6"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 getrandom = "0.4"
 hmac = "0.13"
 indexmap = { version = "2", features = ["serde"] }
 rpassword = "7.5"
+semver = "1.0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_norway = "0.9"
-sha2 = "0.11"
+sha2 = "0.11.1"
+tar = { version = "0.4.46", default-features = false }
 ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
+zip = { version = "9.2.0", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

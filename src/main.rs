@@ -5,11 +5,15 @@ mod cli;
 mod client;
 mod commands;
 mod config;
+mod envfile;
 mod error;
+mod image;
 mod output;
 mod patharg;
 mod presets;
 mod readme;
+mod release;
+mod replace;
 mod resolve;
 mod s3;
 mod secrets;
@@ -24,6 +28,11 @@ use clap::error::ErrorKind;
 use crate::error::Error;
 
 fn main() -> ExitCode {
+    // `sliplane update` on Windows moves the running exe aside; the first start after it that can
+    // delete the file does so.
+    #[cfg(windows)]
+    replace::remove_stale_aside();
+
     // The error envelope can be rendered before parsing succeeds, so the format has to be known
     // from the raw args first.
     output::set_json(std::env::args_os().skip(1).take_while(|a| a != "--").any(|a| a == "--json"));

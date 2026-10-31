@@ -18,7 +18,7 @@ jobs:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -26,6 +26,18 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      # The installers are the first thing a new user runs, so they are tested like code: against
+      # a fake release built from this commit's binary, on every platform they support.
+      - run: cargo build --locked
+      - name: Lint and test install.sh
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then shellcheck scripts/install.sh scripts/test-install.sh; fi
+          sh scripts/test-install.sh target/debug/sliplane
+      - name: Test install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/test-install.ps1 target/debug/sliplane.exe
 
   release:
     if: github.event_name == 'release'
@@ -42,7 +54,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -57,21 +69,94 @@ jobs:
           else
             cargo build --release --locked --target ${{ matrix.target }}
           fi
+      # The archive layout is a contract: scripts/install.sh, scripts/install.ps1 and `sliplane update`
+      # expect sliplane-<tag>-<target>/sliplane[.exe] inside sliplane-<tag>-<target>.tar.gz (.zip on Windows).
       - name: Package
         shell: bash
         run: |
           name=sliplane-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir "$name"
-          cp target/${{ matrix.target }}/release/sliplane${{ matrix.ext }} README.md "$name/"
+          cp target/${{ matrix.target }}/release/sliplane${{ matrix.ext }} README.md LICENSE "$name/"
           if [[ "${{ matrix.ext }}" == ".exe" ]]; then
             7z a "$name.zip" "$name" > /dev/null
-            echo "ASSET=$name.zip" >> $GITHUB_ENV
+            echo "ASSET=$name.zip" >> "$GITHUB_ENV"
           else
             tar czf "$name.tar.gz" "$name"
-            echo "ASSET=$name.tar.gz" >> $GITHUB_ENV
+            echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
           fi
       - name: Upload
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+
+  # Runs once every archive is attached: the checksums cover them all, and the installers ride
+  # along so that /releases/latest/download/install.sh always matches the latest release.
+  checksums:
+    if: github.event_name == 'release'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Write checksums.txt and attach it with the installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dist
+          gh release download "$GITHUB_REF_NAME" --pattern 'sliplane-*' --dir dist
+          cp scripts/install.sh scripts/install.ps1 dist/
+          cd dist
+          set -- sliplane-*
+          [ "$#" -eq 5 ] || { echo "::error::expected 5 archives, found $#: $*"; exit 1; }
+          sha256sum sliplane-* install.sh install.ps1 > checksums.txt
+          cat checksums.txt
+          gh release upload "$GITHUB_REF_NAME" checksums.txt install.sh install.ps1 --clobber
+      # Lets anyone check an archive with: gh attestation verify <file> --repo SpaceCorps/Sliplane-Cli
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: dist/checksums.txt
+
+  # Installs the release the way a user does, from the public URLs, and checks what it got.
+  verify-install:
+    if: github.event_name == 'release'
+    needs: checksums
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install this release (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/install.sh" | sh -s -- "$GITHUB_REF_NAME" --non-interactive
+          test "$("$HOME/.sliplane-cli/bin/sliplane" --version)" = "sliplane ${GITHUB_REF_NAME#v}"
+      - name: Install this release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SLIPLANE_VERSION: ${{ github.ref_name }}
+        run: |
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/install.ps1" | iex
+          $reported = & "$env:LOCALAPPDATA\sliplane-cli\bin\sliplane.exe" --version
+          if ($reported -ne "sliplane $($env:GITHUB_REF_NAME -replace '^v','')") { throw "got '$reported'" }
+      # The one-line install in the README resolves "latest" through GitHub's redirect.
+      - name: Install latest through the README one-liner (Linux, macOS)
+        if: runner.os != 'Windows' && !github.event.release.prerelease
+        run: |
+          rm -rf "$HOME/.sliplane-cli"
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh" | sh -s -- --non-interactive
+          test "$("$HOME/.sliplane-cli/bin/sliplane" --version)" = "sliplane ${GITHUB_REF_NAME#v}"
+      - name: Install latest through the README one-liner (Windows)
+        if: runner.os == 'Windows' && !github.event.release.prerelease
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\sliplane-cli" -ErrorAction SilentlyContinue
+          $env:SLIPLANE_VERSION = ''
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/install.ps1" | iex
+          $reported = & "$env:LOCALAPPDATA\sliplane-cli\bin\sliplane.exe" --version
+          if ($reported -ne "sliplane $($env:GITHUB_REF_NAME -replace '^v','')") { throw "got '$reported'" }
