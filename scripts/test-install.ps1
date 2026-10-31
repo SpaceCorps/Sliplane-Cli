@@ -91,6 +91,9 @@ try {
     Pass 'nonexistent release rejected'
 
     Write-Host "`n$passed checks passed"
+    # The last installer run failed on purpose, and some hosts (GitHub Actions' pwsh step among them)
+    # exit with whatever the last native command left here.
+    $global:LASTEXITCODE = 0
 } finally {
     if ($server) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
