@@ -167,6 +167,8 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane postgres allowlist remove --postgres-id <id> (<ip-or-cidr-or-id>... \| --my-ip [--ipv4 \| --ipv6])` | Remove entries by address, range or rule id; refuses to remove the last one |
 | `sliplane postgres allowlist clear --postgres-id <id>` | Remove every entry: the database then refuses all public connections. Prints what was removed and an `undo` command |
 | `sliplane postgres restore --postgres-id <id> [--timestamp <rfc3339>]` | Restore into a new database; without `--timestamp`, to the latest restorable point |
+| `sliplane postgres query --postgres-id <id> (--sql "<sql>" \| --file <path> \| --sql -) [--write] [--max-rows <n>] [--timeout 30s]` | Run SQL on the database and get the rows back as data (TLS, certificate verified, SCRAM). **Read-only unless `--write`.** Needs a key with `secrets:read`; see below |
+| `sliplane postgres connect --postgres-id <id>` | Open `psql` (16 or newer) on the database; the credentials go in its environment, never its arguments |
 | `sliplane buckets list` | List S3-compatible object storage buckets |
 | `sliplane buckets create --name <n> --region <r>` | Create an S3 object storage bucket |
 | `sliplane buckets keys --bucket-id <id>` | List S3 access keys |
@@ -246,6 +248,11 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - `--volume my-data:/data` automatically binds to an existing server volume named `my-data` rather than creating duplicates.
 5. **Windows Shells**:
    - Run from PowerShell or `cmd.exe`. Avoid Git Bash / MSYS, which automatically rewrites Unix-style path arguments (`/health` &rarr; `C:/Program Files/Git/...`).
+6. **Running SQL (`postgres query`)**:
+   - It connects to the database itself, with the credentials `postgres get` returns, so the key needs **Secrets: Read** (without it the password reads back empty and the command says so). The connection is always TLS with the certificate checked against the host name (libpq's `verify-full`), logs in with SCRAM-SHA-256, and runs your SQL with the Simple Query protocol: several statements in one `--sql` run as one transaction, and each gets its own result.
+   - **The session is read-only unless you pass `--write`.** A write without it fails with SQLSTATE `25006` and an error that says to add `--write`. This is a guard against accidents, not a sandbox: SQL can lift it (`BEGIN READ WRITE`), so the database role's privileges are the real boundary.
+   - Rows are data: `columns` (name, Postgres type, OID) and `rows` as objects. `bool`, `int2/4/8`, `float4/8`, `json` and `jsonb` become JSON values, `NULL` is `null`, and everything else - `numeric` included, so no precision is lost - is the text Postgres prints. A repeated column name gets a distinct key (`a`, `a_2`) and a warning. At most `--max-rows` (1000) rows are kept per statement; `rowCount` still counts all of them and `truncated` says so. `--timeout` (30s) is also the server's `statement_timeout`.
+   - When nothing answers, the error points at the IP allow list: `sliplane postgres allowlist add --my-ip`. The database password and connection string never reach stdout, stderr or an error.
 
 ---
 
@@ -258,6 +265,7 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE` | Set to `1` to allow a chmod 0600 file store on headless Linux without DBus/SecretService | `0` |
 | `SLIPLANE_API_URL` | Override the API base URL (useful for integration testing against mocks) | `https://ctrl.sliplane.io/v0` |
 | `SLIPLANE_PRESETS_URL` | Override the preset catalog URL (same purpose) | `https://sliplane.io/api/presets` |
+| `SLIPLANE_PG_CA_FILE` | PEM file with one more CA certificate that `postgres query` trusts, for a database whose certificate is signed by a private CA (a testing aid). Host name checking stays on | Mozilla's roots only |
 
 ---
 

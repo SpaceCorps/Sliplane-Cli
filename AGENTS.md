@@ -35,6 +35,7 @@ export SLIPLANE_CONFIG_DIR=$(mktemp -d) SLIPLANE_SECRET_STORE=plaintext
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE=1` | Permits the plaintext fallback where no keystore exists |
 | `SLIPLANE_API_URL` | Overrides the API base URL - how `tests/cli.rs` points at its mock |
 | `SLIPLANE_PRESETS_URL` | Overrides the preset catalog URL, the same way |
+| `SLIPLANE_PG_CA_FILE` | A testing aid: a PEM file whose certificates `postgres query` trusts **in addition to** Mozilla's roots, so the Docker test can use a CA it generated. Host-name and chain verification stay on |
 
 There is deliberately **no** `SLIPLANE_API_KEY`. See the invariants below.
 
@@ -51,8 +52,10 @@ src/
     presets.rs     presets list|show|deploy
     logs.rs        services logs --follow: the poll loop and its dedupe
     postgres.rs    postgres allowlist (and its source-IP probe), logs --since, restore's default point
+    query.rs       postgres query (fetch credentials, run, explain failures) and postgres connect (psql)
     wait.rs        --wait: poll events until a deploy has an outcome
   presets.rs       the preset catalog: fetch, validate, generate secrets, turn a preset into a request
+  pgwire.rs        a small synchronous Postgres client: TLS + SCRAM + Simple Query, rows as JSON values
   timeparse.rs     durations (30m) and RFC 3339, without a date-time crate
   client.rs        blocking HTTP (ureq + rustls), status -> ErrorCode, API error hints
   error.rs         ErrorCode (= exit code) and Error {message, detail, remediation}
@@ -175,6 +178,19 @@ second poll takes three seconds.
 
 **Never follow logs without a bound in a test or an agent flow.** `--follow` with no `--for` runs until
 interrupted. The tests use `--for 1s`.
+
+**`postgres query` talks to the database, not the API, and holds a second secret.** The database password
+comes from `GET /postgres/{id}` and goes to the SCRAM exchange in `pgwire.rs` and nowhere else: not argv, not
+output. `commands/query.rs::scrub` removes it (and the URI that contains it) from every error as a last line of
+defence; keep new error paths going through `explain`. Three things there are decisions, not defaults:
+TLS is mandatory and the certificate is always checked against the host name (never add an
+"insecure" switch - `SLIPLANE_PG_CA_FILE` adds a trusted CA, it does not relax anything); only SCRAM-SHA-256
+is accepted; and the session is read-only unless `--write` (the `default_transaction_read_only` startup
+parameter - a guard against accidents that SQL can lift, so never describe it as a security boundary).
+The real-server test is `#[ignore]`d because CI has no Docker. It starts `postgres:18` (or
+`SLIPLANE_TEST_PG_IMAGE`), makes its own CA, and removes the container afterwards:
+`cargo test --test cli postgres_query_against_a_real_postgres -- --ignored`. Run it after touching
+`pgwire.rs`: the unit tests there only replay canned bytes.
 
 **Parallel tests need their own directories.** `tests/cli.rs` names them with an atomic counter. The
 clock is not unique enough: two tests once shared a directory and deleted each other's config.
