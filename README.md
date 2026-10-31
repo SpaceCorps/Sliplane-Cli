@@ -176,6 +176,8 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane services ssh-keys --project-id <p> --service-id <s>` | List the keys attached to a service |
 | `sliplane services attach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Attach a key; prints the host, port and username to connect with |
 | `sliplane services detach-ssh-key --project-id <p> --service-id <s> --key-id <k>` | Detach a key |
+| `sliplane services ssh --service <name> [--ttl 1h] [-- <command>...]` | Run a command on a service, or open a shell, over OpenSSH with a key that exists only for the session |
+| `sliplane services tunnel --service <name> --local-port <n> --remote-port <n> [--for 30m] [--ttl 1h]` | Forward `127.0.0.1:<local>` to `localhost:<remote>` inside a service until interrupted (or `--for` elapses) |
 | `sliplane pricing` | Standard prices for servers, Postgres and object storage (excl. tax) |
 
 ---
@@ -240,6 +242,12 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - `--volume my-data:/data` automatically binds to an existing server volume named `my-data` rather than creating duplicates.
 5. **Windows Shells**:
    - Run from PowerShell or `cmd.exe`. Avoid Git Bash / MSYS, which automatically rewrites Unix-style path arguments (`/health` &rarr; `C:/Program Files/Git/...`).
+6. **SSH and Tunnels** (`services ssh`, `services tunnel`; need `ssh` and `ssh-keygen` from OpenSSH on `PATH`, and a read-write key):
+   - Each run makes a throwaway ed25519 key, registers it with an expiry (`--ttl`, default 1 hour, the fallback if the process is killed), attaches it to the service, runs `ssh`, and then always detaches and deletes the key and removes the private key from disk. A cleanup step that fails is a `warning:` on stderr with the commands that finish the job.
+   - `sliplane services ssh --service web -a work -- ls -la /app` runs non-interactively. stdout and stderr are the command's own, nothing of ours is added, and no terminal is allocated unless stdin is one. A non-zero remote status is exit code 1 with `remote exit status: N` in the error `detail`: the remote status is not passed through, because exit codes 1-7 are this CLI's.
+   - Several words after `--` are run as given; a single word is a command line for the remote shell (`-- 'ls | head'`).
+   - Host keys are trusted on first use and then checked: they live in `known_hosts` next to `config.yaml`, never in `~/.ssh`. A changed key stops the command and prints the `ssh-keygen -R` that forgets the old one.
+   - The tunnel prints one `status: listening` object on stdout once the local port is up, then runs until it is interrupted (Ctrl-C, SIGTERM) or `--for` elapses. A hard kill (SIGKILL, or ending the process on Windows) cannot clean up; the key then expires on its own.
 
 ---
 
@@ -252,6 +260,8 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE` | Set to `1` to allow a chmod 0600 file store on headless Linux without DBus/SecretService | `0` |
 | `SLIPLANE_API_URL` | Override the API base URL (useful for integration testing against mocks) | `https://ctrl.sliplane.io/v0` |
 | `SLIPLANE_PRESETS_URL` | Override the preset catalog URL (same purpose) | `https://sliplane.io/api/presets` |
+| `SLIPLANE_SSH`, `SLIPLANE_SSH_KEYGEN` | Use this `ssh` / `ssh-keygen` program instead of the one on `PATH` (the tests use fakes) | looked up on `PATH` |
+| `SLIPLANE_SSH_RETRY_MS` | Milliseconds between the checks that sshd has accepted the new key (12 tries) | `5000` |
 
 ---
 

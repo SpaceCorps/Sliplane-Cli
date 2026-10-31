@@ -35,6 +35,8 @@ export SLIPLANE_CONFIG_DIR=$(mktemp -d) SLIPLANE_SECRET_STORE=plaintext
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE=1` | Permits the plaintext fallback where no keystore exists |
 | `SLIPLANE_API_URL` | Overrides the API base URL - how `tests/cli.rs` points at its mock |
 | `SLIPLANE_PRESETS_URL` | Overrides the preset catalog URL, the same way |
+| `SLIPLANE_SSH`, `SLIPLANE_SSH_KEYGEN` | Run this program instead of `ssh` / `ssh-keygen` from PATH; `tests/cli.rs` points them at `examples/fake_ssh*.rs` |
+| `SLIPLANE_SSH_RETRY_MS` | Gap between the "has sshd learned the key yet" checks (12 tries); default 5000, the tests use 20 |
 
 There is deliberately **no** `SLIPLANE_API_KEY`. See the invariants below.
 
@@ -51,6 +53,7 @@ src/
     presets.rs     presets list|show|deploy
     logs.rs        services logs --follow: the poll loop and its dedupe
     wait.rs        --wait: poll events until a deploy has an outcome
+    ssh.rs         services ssh|tunnel: temporary key, probe, ssh, cleanup
   presets.rs       the preset catalog: fetch, validate, generate secrets, turn a preset into a request
   timeparse.rs     durations (30m) and RFC 3339, without a date-time crate
   client.rs        blocking HTTP (ureq + rustls), status -> ErrorCode, API error hints
@@ -62,6 +65,7 @@ src/
   patharg.rs       refuses Windows paths that Git Bash rewrote out of "/"
   readme.rs        agent-readme text, and the API spec version this build targets
 tests/cli.rs       drives the binary against an in-process mock of the API
+examples/          fake_ssh and fake_ssh_keygen: test doubles for OpenSSH (cargo test builds them; not installed)
 ```
 
 ## Why it is built this way
@@ -171,6 +175,19 @@ catalog decides which image runs with which secrets. `SLIPLANE_PRESETS_URL` poin
 previous deploy's value. `wait::known_events` has to be read *before* the deploy is triggered, or the
 deploy's own events are mistaken for old ones. The poll interval is a constant, so a test that needs a
 second poll takes three seconds.
+
+**`services ssh` owns stdout, and the cleanup must always run.** The remote command's output goes
+straight to the process's stdout/stderr, so nothing of ours may be printed around it (notes and warnings
+go to stderr, and only before or after the session). That is why it is the one successful command that
+can print nothing. A remote exit status can not be this process's exit code (1-7 are ours); it is
+`remote exit status: N` in the envelope `detail`. `ssh::cleanup` runs after every outcome, and writes
+through `say`, not `eprintln!`: `eprintln!` panics when stderr is closed, and a panic there skips the
+detach and delete. The probe is a *second* connection that runs `exit 0`, because there is no
+authenticate-only mode without ControlMaster, which Windows OpenSSH lacks. Host keys are `accept-new`
+against our own `known_hosts` in the config dir: trust on first use, verified after. The private key is
+never read, printed, or in argv except as the `-i` path. The tests replace ssh and ssh-keygen with
+`examples/fake_ssh*.rs`; run `cargo build --examples` first if you use `cargo test --test cli` alone
+(the test falls back to doing it).
 
 **Never follow logs without a bound in a test or an agent flow.** `--follow` with no `--for` runs until
 interrupted. The tests use `--for 1s`.
