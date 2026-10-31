@@ -3,23 +3,42 @@
 //! state over and refuses updates that would silently drop something).
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use crate::cli::{Deploy, ServiceRef, Services};
+use crate::cli::{Deploy, ServiceRef, Services, WaitFlags};
 use crate::client::{Client, query, seg};
-use crate::commands::{client, done, metrics_query, print};
+use crate::commands::{client, done, logs, metrics_query, print, wait};
 use crate::error::{Error, ErrorCode, Result};
-use crate::{account, obj, patharg};
+use crate::{account, obj, patharg, timeparse};
+
+fn timeout(w: &WaitFlags) -> Duration {
+    Duration::from_secs(w.timeout.unwrap_or(wait::DEFAULT_TIMEOUT_SECS))
+}
 
 pub fn run(c: Services) -> Result<()> {
     match c {
         Services::List { project_id, a } => list(&client(&a)?, project_id.as_deref()),
         Services::Get(s) => print(client(&s.a)?.get(&path(&s, ""))?),
-        Services::Create { project_id, name, server_id, d, public, protocol, env, secret_env, volumes, a } => {
+        Services::Create { project_id, name, server_id, d, public, protocol, env, secret_env, volumes, w, a } => {
             let client = client(&a)?;
             let body = create_body(&client, name, &server_id, &d, public, protocol, &env, &secret_env, &volumes)?;
-            print(client.post(&format!("projects/{}/services", seg(&project_id)), &body)?)
+            let mut service = client.post(&format!("projects/{}/services", seg(&project_id)), &body)?;
+            if w.wait {
+                let id = service.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                // A brand-new service has no events to ignore.
+                match wait::until_deployed(&client, &project_id, &id, &HashSet::new(), timeout(&w)) {
+                    Ok(outcome) => service["deploy"] = outcome,
+                    Err(e) => {
+                        // The service exists; say so before failing, so it is not created twice.
+                        service["deploy"] = json!({ "status": "not_confirmed", "error": e.message });
+                        print(service)?;
+                        return Err(e);
+                    }
+                }
+            }
+            print(service)
         }
         Services::Update { s, name, d, env, secret_env, replace_env, merge_env } => {
             update(&s, name, &d, &env, &secret_env, replace_env, merge_env)
@@ -36,23 +55,58 @@ pub fn run(c: Services) -> Result<()> {
             let r = client(&s.a)?.post_empty(&path(&s, "/unpause"))?;
             done(r, "accepted", with(ids(&s), "action", "unpause"))
         }
-        Services::Deploy { s, tag } => {
+        Services::Deploy { s, tag, w } => {
             // An absent body means no Content-Type either, and the deploy endpoint rejects that
             // with "Invalid request body". An empty object is accepted.
             let body = match tag.as_deref().filter(|t| !t.is_empty()) {
                 Some(t) => json!({ "tag": t }),
                 None => json!({}),
             };
-            let r = client(&s.a)?.post(&path(&s, "/deploy"), &body)?;
+            let client = client(&s.a)?;
+            // Before triggering, so the deploy's own events are the only ones that count.
+            let known = if w.wait { Some(wait::known_events(&client, &s.project_id, &s.service_id)?) } else { None };
+            let r = client.post(&path(&s, "/deploy"), &body)?;
             let mut fields = with(ids(&s), "action", "deploy");
             if let Some(t) = tag {
                 fields["tag"] = json!(t);
             }
-            done(r, "accepted", fields)
+            match known {
+                None => done(r, "accepted", fields),
+                Some(known) => {
+                    let outcome = wait::until_deployed(&client, &s.project_id, &s.service_id, &known, timeout(&w))?;
+                    fields["waitedSeconds"] = outcome["waitedSeconds"].clone();
+                    fields["event"] = outcome["event"].clone();
+                    print(with(fields, "status", "live"))
+                }
+            }
         }
-        Services::Logs { s, from, to } => {
+        Services::Logs { s, from, to, since, follow, interval, follow_for } => {
+            let from = match since.as_deref() {
+                Some(w) => Some(timeparse::since(w)?),
+                None => from,
+            };
+            let client = client(&s.a)?;
+            if follow {
+                let limit = follow_for
+                    .as_deref()
+                    .map(|d| {
+                        timeparse::duration_secs(d).map(Duration::from_secs).ok_or_else(|| {
+                            Error::invalid(format!("--for '{d}' is not a duration. Use 30s, 5m, 1h or 1d."))
+                        })
+                    })
+                    .transpose()?;
+                let interval = Duration::from_secs(interval.unwrap_or(2));
+                return logs::follow(&client, &path(&s, "/logs"), from, interval, limit);
+            }
             let q = query(&[("from", from.map(|v| v.to_string())), ("to", to.map(|v| v.to_string()))]);
-            print(client(&s.a)?.get(&path(&s, &format!("/logs{q}")))?)
+            let lines = client.get(&path(&s, &format!("/logs{q}")))?;
+            if lines.as_array().is_some_and(|l| l.len() >= logs::LINE_LIMIT) {
+                eprintln!(
+                    "warning: the API returned its limit of {} lines, so there may be more. Page back with --to set to the earliest timestamp received.",
+                    logs::LINE_LIMIT
+                );
+            }
+            print(lines)
         }
         Services::Metrics { s, r } => print(client(&s.a)?.get(&path(&s, &format!("/metrics{}", metrics_query(&r))))?),
         Services::Events(s) => print(client(&s.a)?.get(&path(&s, "/events"))?),

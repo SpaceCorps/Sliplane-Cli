@@ -92,6 +92,8 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 |:---|:---|
 | `sliplane login [name]` | Interactively authenticate with your API token and save it to the OS keystore |
 | `sliplane me` | Query identity, organization and the token's scopes (e.g. `services:write`, `secrets:read`) |
+| `sliplane version` | CLI version and the API spec it targets |
+| `sliplane completion <shell>` | Shell completion script for bash, zsh, fish, powershell or elvish |
 | `sliplane accounts list [--check]` | List configured accounts (pass `--check` to verify token validity) |
 | `sliplane accounts test <name>` | Test credentials for a specific account |
 | `sliplane accounts add <name>` | Manually add an account and API key to the keystore |
@@ -122,8 +124,9 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 | `sliplane services get --project-id <p> --service-id <s>` | Fetch detailed service configuration |
 | `sliplane services create --project-id <p> (--image <img> \| --repo <r>)` | Deploy a new container service |
 | `sliplane services update --project-id <p> --service-id <s>` | Update service deployment settings (see safeguards below) |
-| `sliplane services deploy --project-id <p> --service-id <s>` | Trigger immediate redeployment |
-| `sliplane services logs --project-id <p> --service-id <s> [--to <ts>]` | Read container logs (paginated, 500 lines per call) |
+| `sliplane services deploy --project-id <p> --service-id <s> [--wait]` | Trigger immediate redeployment; `--wait` blocks until it succeeds or fails |
+| `sliplane services logs --project-id <p> --service-id <s> [--since 30m] [--to <ts>]` | Read container logs (paginated, 500 lines per call) |
+| `sliplane services logs --project-id <p> --service-id <s> --follow [--for 2m]` | Stream new log lines as they arrive (JSON Lines with `--json`) |
 | `sliplane services pause / unpause` | Pause or resume container execution |
 | `sliplane services set-env --project-id <p> --service-id <s> --key <k> --value <v>` | Safely set or update a single environment variable |
 | `sliplane services delete-env --project-id <p> --service-id <s> --key <k>` | Remove a single environment variable |
@@ -132,6 +135,18 @@ Every command that accesses the API accepts `--account <name>` (short `-a <name>
 | `sliplane services attach-volume --project-id <p> --service-id <s> --volume <id-or-name>:/path` | Mount a volume and redeploy |
 | `sliplane services update-volume --project-id <p> --service-id <s> --volume-id <v> --mount-path /path` | Change a mount path and redeploy |
 | `sliplane services detach-volume --project-id <p> --service-id <s> --volume-id <v>` | Unmount a volume and redeploy (the data is kept) |
+
+### Presets (one-click apps)
+
+The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, and about 70 more). `list` and `show` need no account.
+
+| Command | Description |
+|:---|:---|
+| `sliplane presets list [--search <text>] [--tag <tag>]` | List the catalog |
+| `sliplane presets show <id>` | Image, ports, environment and volumes of one preset, secrets hidden |
+| `sliplane presets deploy <id> --project-id <p> --server-id <s> [--name <n>] [--env K=V] [--secret-env K=V] [--private] [--dry-run] [--wait]` | Create a service from a preset with a fresh name, volume and password |
+
+`presets deploy` prints the passwords it generated **once**: secret values cannot be read back from the API. Seven presets (`postgres`, `mongo`, `redis`, `mysql`, `mariadb`, `rabbitmq`, `ssh`) deploy on a public TCP port by default; pass `--private` to keep them off the internet, and `--dry-run` to see the exact request first.
 
 ### Managed PostgreSQL & Storage
 
@@ -234,6 +249,7 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
 | `SLIPLANE_SECRET_STORE` | Force specific credential store: `dpapi`, `keychain`, `libsecret`, `plaintext` | Auto-detected |
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE` | Set to `1` to allow a chmod 0600 file store on headless Linux without DBus/SecretService | `0` |
 | `SLIPLANE_API_URL` | Override the API base URL (useful for integration testing against mocks) | `https://ctrl.sliplane.io/v0` |
+| `SLIPLANE_PRESETS_URL` | Override the preset catalog URL (same purpose) | `https://sliplane.io/api/presets` |
 
 ---
 

@@ -3,24 +3,40 @@
 
 mod accounts;
 mod login;
+mod logs;
+mod presets;
 mod services;
+mod wait;
 
+use clap::CommandFactory;
 use serde_json::{Value, json};
 
 use crate::account::{self, Resolved};
 use crate::cli::*;
 use crate::client::{Client, query, seg};
 use crate::error::{Error, Result};
-use crate::{obj, output};
+use crate::{obj, output, readme};
 
 pub fn run(command: Command) -> Result<()> {
     match command {
         Command::Me(a) => print(client(&a)?.get("me")?),
         Command::Login(c) => login::run(c),
         Command::AgentReadme => {
-            crate::readme::print();
+            readme::print();
             Ok(())
         }
+        Command::Version => print(obj! {
+            "name" => "sliplane",
+            "version" => env!("CARGO_PKG_VERSION"),
+            "apiSpec" => readme::API_VERSION,
+            "os" => std::env::consts::OS,
+            "arch" => std::env::consts::ARCH,
+        }),
+        Command::Completion { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "sliplane", &mut std::io::stdout());
+            Ok(())
+        }
+        Command::Presets(c) => presets::run(c),
         Command::Accounts(c) => accounts::run(c),
         Command::Projects(c) => projects(c),
         Command::Servers(c) => servers(c),
