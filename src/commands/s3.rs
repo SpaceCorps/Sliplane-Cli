@@ -307,7 +307,13 @@ fn wait_until_active(objects: &ObjectStore, t: &Target, timeout: u64) -> Result<
     }
     Err(Error::other(format!("The S3 key is stored but did not become usable within {timeout}s."))
         .detail(last.detail.unwrap_or(last.message))
-        .fix(format!("Wait a minute, then repeat {} (it reuses the stored key and waits again).", t.connect_command())))
+        .fix(format!(
+            "Wait a minute, then repeat {} (it reuses the stored key and waits again). If the key was deleted at              Sliplane, replace it: sliplane s3 disconnect -a {a} --bucket-id {id} && {}",
+            t.connect_command(),
+            t.connect_command(),
+            a = t.account,
+            id = t.bucket_id
+        )))
 }
 
 fn disconnect(b: &mut BucketId) -> Result<()> {

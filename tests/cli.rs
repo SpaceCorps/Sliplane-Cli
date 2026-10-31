@@ -2188,12 +2188,20 @@ fn files_scenario(t: &S3Target) {
     assert_eq!(out["bucket"], t.bucket.as_str());
 
     let (_, out, _) = run(&["ls", "--prefix", &format!("{p}/docs/")]);
-    assert_eq!(keys_of(&out), [awkward.clone()]);
+    assert_eq!(keys_of(&out), std::slice::from_ref(&awkward));
     assert_eq!(strings(&out["prefixes"]), [format!("{p}/docs/caf\u{e9}/")]);
     let o = &out["objects"][0];
     assert_eq!(o["size"], 14);
     assert!(o["lastModified"].as_str().unwrap().starts_with("20"), "{o}");
     assert!(!o["etag"].as_str().unwrap().is_empty() && !o["etag"].as_str().unwrap().contains('"'));
+
+    // A prefix with a space, a plus and non-ASCII is signed as it is sent in the query string.
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/docs/hello world+")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), std::slice::from_ref(&awkward));
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/docs/caf\u{e9}/")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), std::slice::from_ref(&unicode));
 
     let (_, out, _) = run(&["ls", "--recursive", "--prefix", &format!("{p}/")]);
     assert_eq!(out["count"], 4);
@@ -2252,6 +2260,18 @@ fn files_scenario(t: &S3Target) {
         .filter(|n| n.contains(".part"))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // Nothing at all is a file too.
+    let empty = env.dir.join("empty.txt");
+    std::fs::write(&empty, b"").unwrap();
+    let empty_key = format!("{p}/docs/empty.txt");
+    let (code, out, err) = run(&["upload", "--file", empty.to_str().unwrap(), "--key", &empty_key]);
+    assert_eq!((code, out["size"].as_u64()), (0, Some(0)), "{err}");
+    let empty_out = env.dir.join("got-empty.txt");
+    let (code, out, err) = run(&["download", "--key", &empty_key, "--out", empty_out.to_str().unwrap()]);
+    assert_eq!((code, out["size"].as_u64()), (0, Some(0)), "{err}");
+    assert_eq!(std::fs::read(&empty_out).unwrap(), b"");
+    assert_eq!(run(&["rm", "--key", &empty_key]).0, 0);
 
     // An existing file is not replaced unless asked; an existing directory gets the key's file name.
     let (code, _, err) = run(&["download", "--key", &awkward, "--out", small_out.to_str().unwrap()]);
@@ -2381,7 +2401,7 @@ fn s3_files_against_a_real_server_when_one_is_named() {
     });
 }
 
-/// More than one page of real keys. Slow (it uploads 1,205), so it only runs when asked for twice.
+/// More than one page of real keys. Slow (it uploads 1,010 files, one CLI run each), so it only runs when asked for twice.
 #[test]
 fn s3_a_real_server_lists_more_than_one_page() {
     let (Ok(endpoint), Ok(_)) = (std::env::var("SLIPLANE_TEST_S3_ENDPOINT"), std::env::var("SLIPLANE_TEST_S3_MANY"))
@@ -2401,7 +2421,7 @@ fn s3_a_real_server_lists_more_than_one_page() {
     let p = format!("many-{}", std::process::id());
     let file = env.dir.join("one.txt");
     std::fs::write(&file, b"x").unwrap();
-    let total = 1205;
+    let total = 1010;
 
     // Eight uploaders at a time; every one is a separate run of the CLI.
     std::thread::scope(|scope| {
@@ -2459,13 +2479,7 @@ fn s3_a_real_server_lists_more_than_one_page() {
     assert_eq!(rest["count"], total - 1000);
     assert_eq!(rest["truncated"], false);
 
-    let mut args = vec!["s3", "rm", "-a", "work", "--bucket", &bucket];
-    let doomed: Vec<String> = keys.iter().take(1).cloned().collect();
-    for k in &doomed {
-        args.extend(["--key", k]);
-    }
-    assert_eq!(env.json(&args).0, 0);
-    for chunk in keys.chunks(8).skip(1) {
+    for chunk in keys.chunks(25) {
         let mut args = vec!["s3", "rm", "-a", "work", "--bucket", &bucket];
         for k in chunk {
             args.extend(["--key", k]);

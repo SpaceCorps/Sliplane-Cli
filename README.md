@@ -166,6 +166,19 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane buckets keys --bucket-id <id>` | List S3 access keys |
 | `sliplane buckets create-key --bucket-id <id> --name <label>` | Generate scoped S3 access key and secret |
 
+### Files in a Bucket (S3)
+
+Objects are reached over the S3 protocol with an **S3 key of their own**, not with the API key. `s3 connect` makes that key once per bucket and keeps it in the OS keystore; the other `s3` commands read it from there. The key pair is never printed, never put on a command line and never written to `config.yaml`, and the API key is never sent to the bucket's endpoint. Everything takes `--bucket <name>` or `--bucket-id <id>`.
+
+| Command | Description |
+|:---|:---|
+| `sliplane s3 connect --bucket <name> [--timeout 60]` | Create an S3 key for the bucket, store it in the keystore, wait until it works. Reuses a stored key |
+| `sliplane s3 ls --bucket <name> [--prefix <p>] [--recursive] [--limit N] [--token T]` | List files (key, size, lastModified, etag), folded at `/` unless `--recursive`. A truncated listing returns a `nextToken` |
+| `sliplane s3 upload --bucket <name> --file <path> [--key <k>] [--content-type <mime>] [--force]` | Upload one file in a single request (up to 5 GiB). Refuses to replace an object without `--force` |
+| `sliplane s3 download --bucket <name> --key <k> [--out <path> \| -] [--force]` | Download one file; `--out -` streams it to stdout. Refuses to replace a local file without `--force` |
+| `sliplane s3 rm --bucket <name> --key <k> [--key <k2> ...]` | Delete files. Every key must exist or nothing is deleted. Asks nothing |
+| `sliplane s3 disconnect --bucket <name>` | Forget the stored S3 key. This does **not** revoke it; `buckets delete-key` does |
+
 ### SSH Access & Pricing
 
 | Command | Description |
