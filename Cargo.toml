@@ -13,15 +13,20 @@ name = "sliplane"
 path = "src/main.rs"
 
 [dependencies]
+bytes = "1.12.1"
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }
 clap_complete = "4.6"
+fallible-iterator = "0.2"
 getrandom = "0.4"
 indexmap = { version = "2", features = ["serde"] }
+postgres-protocol = "0.6.12"
 rpassword = "7.5"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_norway = "0.9"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "gzip"] }
+webpki-roots = "1.0.11"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

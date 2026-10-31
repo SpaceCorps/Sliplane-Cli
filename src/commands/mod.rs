@@ -6,6 +6,7 @@ mod login;
 mod logs;
 mod postgres;
 mod presets;
+mod query;
 mod services;
 mod wait;
 
@@ -280,6 +281,10 @@ fn postgres(mut c: Postgres) -> Result<()> {
         Postgres::RestoreWindow(p) => print(client(&p.a)?.get(&at(&p, "/restore"))?),
         Postgres::Restore { p, timestamp } => postgres::restore(&p, timestamp),
         Postgres::Allowlist(c) => postgres::allowlist(c),
+        Postgres::Query { p, sql, file, write, max_rows, timeout } => {
+            query::query(&p, sql, file, write, max_rows, &timeout)
+        }
+        Postgres::Connect(p) => query::connect(&p),
     }
 }
 

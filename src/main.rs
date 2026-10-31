@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod output;
 mod patharg;
+mod pgwire;
 mod presets;
 mod readme;
 mod resolve;

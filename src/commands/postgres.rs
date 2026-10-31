@@ -277,7 +277,7 @@ fn family_of(rules: &[Rule]) -> Option<Family> {
 }
 
 /// `blocked`, `open` or `restricted`, with a warning for each reason to look twice.
-fn assess(list: &Value) -> (&'static str, Vec<String>) {
+pub(super) fn assess(list: &Value) -> (&'static str, Vec<String>) {
     let ranges: Vec<Cidr> = list
         .as_array()
         .map(|a| a.iter().filter_map(|e| e.get("source").and_then(Value::as_str)).filter_map(Cidr::parse).collect())
