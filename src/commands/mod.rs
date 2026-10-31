@@ -10,6 +10,7 @@ mod postgres;
 mod presets;
 mod s3;
 mod services;
+mod ssh;
 mod update;
 mod wait;
 
