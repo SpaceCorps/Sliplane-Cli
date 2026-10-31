@@ -5,80 +5,90 @@
 [![Docs](https://img.shields.io/badge/docs-online-success)](https://spacecorps.github.io/Sliplane-Cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A blazing fast, native command-line tool and agent interface for the [Sliplane](https://sliplane.io) cloud hosting platform API (v0, OpenAPI spec 0.11.0). Built in Rust for developers and autonomous AI workflows.
+Manage [Sliplane](https://sliplane.io) servers, services, PostgreSQL databases and S3 buckets from your terminal, or let an AI agent do it. A single static binary built in Rust, covering the whole Sliplane API (v0, OpenAPI spec 0.11.0).
+
+## Install
+
+macOS, Linux, and WSL:
+
+```sh
+curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex
+```
+
+Open a new terminal and check it worked with `sliplane --version`. No admin rights needed: the installer downloads the binary for your platform, verifies its SHA-256 checksum, and puts it in `~/.sliplane-cli/bin` (Windows: `%LOCALAPPDATA%\sliplane-cli\bin`). To update, run `sliplane update` (`sliplane update --check` only tells you whether there is a newer release), or run the installer again.
+
+<details>
+<summary>Other ways to install, pin a version, or uninstall</summary>
+
+**A specific version.** Pass it to the installer, or from a working install run `sliplane update --version v1.3.0` (it can also go back to an older release; plain `sliplane update` never does). Releases up to 1.2.0 have no `checksums.txt`, so neither will install them.
+
+```sh
+curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh -s -- 1.3.0
+```
+
+```powershell
+$env:SLIPLANE_VERSION = '1.3.0'; irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex
+```
+
+**Another directory.** Set `SLIPLANE_INSTALL_DIR` before running the installer. On Windows, `SLIPLANE_NO_PATH=1` leaves your PATH alone; on macOS and Linux the installer asks before it edits your shell profile (`--setup-path` says yes without asking, `--non-interactive` says no).
+
+**By hand.** Download the archive for your platform from the [releases page](https://github.com/SpaceCorps/Sliplane-Cli/releases/latest), check it against `checksums.txt`, and put `sliplane` anywhere on your PATH. Release files are named `sliplane-vX.Y.Z-<target>.tar.gz` (`.zip` on Windows) for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` and `x86_64-pc-windows-msvc`. You can also verify where a file came from with `gh attestation verify <file> --repo SpaceCorps/Sliplane-Cli`.
+
+**From source.** `cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked`
+
+**Uninstall.** Run `sliplane accounts remove <name>` for each account (it deletes the stored key), then delete the install directory.
+
+**Using the official `sliplane` CLI too?** Both are called `sliplane`. This installer uses its own directory and the two keep separate settings, but whichever directory comes first on your PATH wins. The installer tells you if another `sliplane` shadows this one.
+
+</details>
+
+## Install with your coding agent
+
+Paste this into Claude Code, Codex, Cursor, or any other coding agent:
+
+```text
+Install the Sliplane CLI on my machine, not in a sandbox or container. On macOS, Linux or WSL run `curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh`; on Windows run `irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex` in PowerShell. Make sure the install directory is on my PATH (the installer prints what to add if it isn't), confirm it works with `sliplane --version`, then run `sliplane agent-readme` and read it: it is the manual for driving this CLI. Do not ask me for my Sliplane API key or put it anywhere; tell me to run `sliplane login` myself in a terminal. If you can't run commands directly on my machine, don't install it anywhere else. Instead, give me step-by-step instructions for my OS and shell: what to paste into my terminal, how to add it to PATH, and how to check it worked.
+```
+
+## Get started
+
+```sh
+sliplane login                          # opens the API keys page; the key goes into your OS keystore
+sliplane me -a default                  # who am I, and what can this key do?
+sliplane projects list -a default
+sliplane services list -a default
+sliplane services logs --project-id prj_123 --service-id srv_abc -a default
+```
+
+Every command that talks to the API takes `--account` (`-a`). That is deliberate: a machine can hold keys for several Sliplane teams, and there is no default that could send a delete to the wrong one.
+
+## Authentication
+
+`sliplane login [name]` opens the API keys page in your browser, asks for the key without echoing it, checks it against the API, and stores it in the OS keystore (macOS Keychain, Windows DPAPI, Linux Secret Service). The name defaults to `default`. In CI or scripts, pipe the key in:
+
+```sh
+printf '%s' "$KEY" | sliplane login ci --api-key-stdin
+```
+
+## Scripting
+
+Output is YAML. Add `--json` to any command for JSON. Errors go to stderr as a JSON envelope with a stable exit code (see [Machine-Readable Error Envelopes](#machine-readable-error-envelopes)), and the three commands that prompt (`login`, `accounts add`, `accounts remove`) refuse to when stdin is not a terminal and name the flag to use instead.
 
 ---
 
 ## Highlights
 
 - ⚡ **Sub-3ms Startup**: Compiled as a native static binary with zero runtime dependencies. Executes in ~1–3 ms (compared to ~75 ms for managed runtimes).
-- 🔐 **OS Keystore Integration**: `sliplane login` prompts for your token securely and saves it to native OS vaults (macOS Keychain, Linux Secret Service / Keyutils, Windows DPAPI).
+- 🔐 **OS Keystore Integration**: API keys live in native OS vaults (macOS Keychain, Linux Secret Service / Keyutils, Windows DPAPI), never in a config file.
 - 🌐 **Full 65-Endpoint API Coverage**: Complete command surface across compute servers, web services, managed PostgreSQL databases, S3 object storage buckets, and OAuth clients.
 - 🤖 **AI Agent Native**: Machine-readable `--json` output, standardized error envelopes with stable exit codes, and explicit `llms.txt` agent guidance.
 - 🛡️ **Safety Guardrails**: Strict account scoping protects multi-tenant setups; safeguards prevent accidental deletion of environment variables or secrets.
-
----
-
-## Installation
-
-### Using Cargo
-
-```bash
-cargo install --git https://github.com/SpaceCorps/Sliplane-Cli --locked
-```
-
-### Pre-built Standalone Binaries
-
-Download standalone binary archives directly from the [GitHub Releases](https://github.com/SpaceCorps/Sliplane-Cli/releases/latest) page:
-
-| Platform | Architecture | Binary Package |
-|:---|:---|:---|
-| **macOS** | Apple Silicon (`aarch64`) | [`sliplane-v1.2.0-aarch64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-aarch64-apple-darwin.tar.gz) |
-| **macOS** | Intel (`x86_64`) | [`sliplane-v1.2.0-x86_64-apple-darwin.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-apple-darwin.tar.gz) |
-| **Linux** | x86_64 (musl static) | [`sliplane-v1.2.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-unknown-linux-musl.tar.gz) |
-| **Windows**| x64 (MSVC) | [`sliplane-v1.2.0-x86_64-pc-windows-msvc.zip`](https://github.com/SpaceCorps/Sliplane-Cli/releases/download/v1.2.0/sliplane-v1.2.0-x86_64-pc-windows-msvc.zip) |
-
----
-
-## Quickstart
-
-### 1. Authenticate
-
-Run `sliplane login` to launch your browser, copy your API token, verify it against `GET /v0/me`, and store it in your OS keystore:
-
-```bash
-# Interactive browser login (saved under account 'default')
-sliplane login
-
-# Log in with a specific account name
-sliplane login staging
-
-# Headless / CI pipeline login (reads token from stdin with no shell history trace)
-echo "$SLIPLANE_API_KEY" | sliplane login ci --api-key-stdin
-```
-
-### 2. Verify Identity & List Resources
-
-```bash
-# Verify your token identity
-sliplane me -a default
-
-# List all projects
-sliplane projects list -a default
-
-# View compute servers
-sliplane servers list -a default
-```
-
-### 3. Deploy & Manage Services
-
-```bash
-# Deploy a web service
-sliplane services deploy --project-id prj_123 --service-id srv_abc -a default
-
-# Stream live container logs
-sliplane services logs --project-id prj_123 --service-id srv_abc -a default
-```
 
 ---
 
@@ -95,6 +105,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 | `sliplane login [name]` | Interactively authenticate with your API token and save it to the OS keystore |
 | `sliplane me` | Query identity, organization and the token's scopes (e.g. `services:write`, `secrets:read`) |
 | `sliplane version` | CLI version and the API spec it targets |
+| `sliplane update [--check] [--version vX.Y.Z]` | Update this executable to the latest release (or the named one) after verifying its SHA-256 checksum. `--check` only reports. Needs no account; never runs by itself |
 | `sliplane completion <shell>` | Shell completion script for bash, zsh, fish, powershell or elvish |
 | `sliplane accounts list [--check]` | List configured accounts (pass `--check` to verify token validity) |
 | `sliplane accounts test <name>` | Test credentials for a specific account |

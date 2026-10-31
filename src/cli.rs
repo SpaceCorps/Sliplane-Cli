@@ -81,6 +81,8 @@ pub enum Command {
     SshKeys(SshKeys),
     /// List standard prices for servers, Postgres and object storage
     Pricing(Account),
+    /// Update this executable to the latest release, after verifying its SHA-256 checksum. Needs no account
+    Update(Update),
     /// Point a project's coding agent at this CLI's manual
     #[command(subcommand)]
     Agent(Agent),
@@ -1167,6 +1169,22 @@ impl Buckets {
             | Buckets::DeleteKey { b, .. } => Some(b),
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// update
+
+/// `--version` is this command's own option, so clap's automatic one is switched off here.
+#[derive(Args, Clone)]
+#[command(disable_version_flag = true)]
+pub struct Update {
+    /// Only report the current and the latest version; change nothing
+    #[arg(long, conflicts_with = "target_version")]
+    pub check: bool,
+
+    /// Install this release (v1.3.0 or 1.3.0) instead of the latest. The only way to go to an older one
+    #[arg(long = "version", value_name = "VERSION")]
+    pub target_version: Option<String>,
 }
 
 #[cfg(test)]
