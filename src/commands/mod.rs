@@ -6,6 +6,7 @@ mod login;
 mod logs;
 mod presets;
 mod services;
+mod update;
 mod wait;
 
 use clap::CommandFactory;
@@ -48,6 +49,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Oauth(c) => oauth(c),
         Command::SshKeys(c) => ssh_keys(c),
         Command::Pricing(a) => print(client(&a)?.get("pricing")?),
+        Command::Update(c) => update::run(c),
     }
 }
 
