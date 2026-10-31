@@ -1683,3 +1683,218 @@ fn services_list_takes_a_project_by_name() {
     assert_eq!(out[0]["id"], "s3");
     assert_eq!(mock.last("GET").path, "projects/p2/services");
 }
+
+// ---------------------------------------------------------------------------------------------
+// --env-file and --secret-env-file
+
+/// Writes a file into the test's own directory and returns its path.
+fn file_in(env: &Env, name: &str, text: &str) -> String {
+    let path = env.dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+const CREATE: [&str; 11] =
+    ["services", "create", "--project-id", "p1", "--name", "web", "--server-id", "srv1", "--image", "nginx", "-a"];
+
+fn create_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = CREATE.to_vec();
+    args.push("work");
+    args.extend(extra);
+    args
+}
+
+#[test]
+fn create_reads_plain_and_secret_variables_from_files_and_the_flag_wins() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let plain = file_in(&env, "plain.env", "# app\nPORT=8080\nexport MODE=\"a b\"\nA=from-file\n");
+    let secret = file_in(&env, "secret.env", "DB_PASSWORD='p#ss $word'\n");
+    let out = env.run(&create_args(&[
+        "--env-file",
+        &plain,
+        "--secret-env-file",
+        &secret,
+        "--env",
+        "A=from-flag",
+        "--secret-env",
+        "S=2",
+        "--json",
+    ]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(
+        body["env"],
+        json!([
+            {"key": "PORT", "value": "8080", "secret": false},
+            {"key": "MODE", "value": "a b", "secret": false},
+            {"key": "DB_PASSWORD", "value": "p#ss $word", "secret": true},
+            {"key": "A", "value": "from-flag", "secret": false},
+            {"key": "S", "value": "2", "secret": true},
+        ])
+    );
+    // The override is named, with where it came from, and no value is printed.
+    assert!(
+        stderr.contains(&format!("note: A at {plain}:4 is replaced by the A given on the command line")),
+        "{stderr}"
+    );
+    for value in ["from-file", "from-flag", "p#ss"] {
+        assert!(!stderr.contains(value), "a value reached stderr: {stderr}");
+    }
+}
+
+#[test]
+fn later_files_replace_earlier_ones_and_say_so() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let first = file_in(&env, "first.env", "A=1\nB=1\n");
+    let second = file_in(&env, "second.env", "B=2\nB=3\n");
+    let out = env.run(&create_args(&["--env-file", &first, "--env-file", &second, "--json"]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        mock.last("POST").body.unwrap()["env"],
+        json!([{"key": "A", "value": "1", "secret": false}, {"key": "B", "value": "3", "secret": false}])
+    );
+    assert!(stderr.contains(&format!("note: B at {second}:1 replaces B at {first}:2")), "{stderr}");
+    assert!(stderr.contains(&format!("note: B at {second}:2 replaces B at {second}:1")), "{stderr}");
+}
+
+#[test]
+fn a_bad_env_file_names_the_line_and_never_the_value_and_creates_nothing() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+
+    // A bare KEY means "empty value" for --env; in a file it is refused, not silently reinterpreted.
+    let bare = file_in(&env, "bare.env", "A=1\nSUPERSECRETTOKEN\n");
+    let (code, _, err) = env.json(&create_args(&["--env-file", &bare]));
+    assert_eq!(code, 6);
+    let message = err["error"].as_str().unwrap();
+    assert!(message.contains("bare.env, line 2"), "{err}");
+    assert!(!message.contains("SUPERSECRETTOKEN"), "the line was echoed: {err}");
+
+    let open = file_in(&env, "open.env", "A=1\nB=\"hunter2 never closed\nC=3\n");
+    let (code, _, err) = env.json(&create_args(&["--secret-env-file", &open]));
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("open.env, line 2"), "{err}");
+    assert!(!err.to_string().contains("hunter2"), "{err}");
+
+    let missing = env.dir.join("nope.env").to_string_lossy().into_owned();
+    let (code, _, err) = env.json(&create_args(&["--env-file", &missing]));
+    assert_eq!(code, 6, "{err}");
+
+    let empty = file_in(&env, "empty.env", "# nothing here\n");
+    let (code, _, err) = env.json(&create_args(&["--env-file", &empty]));
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("defines no variables"), "{err}");
+
+    // Every one of those failed before the account was asked anything but `me`.
+    assert_eq!(paths(&mock, "POST"), Vec::<String>::new());
+    assert_eq!(paths(&mock, "GET"), ["me"], "files are read before any lookup");
+}
+
+#[test]
+fn update_applies_the_env_protections_to_file_variables_too() {
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, repo_service()), ("PATCH", SVC, 200, repo_service())]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "new.env", "A=9\n");
+    let base = ["services", "update", "--project-id", "p1", "--service-id", "s1", "--env-file", &file, "-a", "work"];
+
+    // Without a flag saying what to do with B and S, the update is refused and names them.
+    let (code, _, err) = env.json(&base);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("2 environment variable(s) not listed: B, S"), "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "PATCH"));
+
+    // --merge-env keeps them, secrets sent back empty so the API keeps the stored value.
+    let mut args = base.to_vec();
+    args.push("--merge-env");
+    let (code, _, err) = env.json(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        mock.last("PATCH").body.unwrap()["env"],
+        json!([{"key": "B", "value": "2", "secret": false},
+               {"key": "S", "value": "", "secret": true},
+               {"key": "A", "value": "9", "secret": false}])
+    );
+
+    // --replace-env sends exactly the file.
+    let mut args = base.to_vec();
+    args.push("--replace-env");
+    let (code, _, err) = env.json(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("PATCH").body.unwrap()["env"], json!([{"key": "A", "value": "9", "secret": false}]));
+}
+
+#[test]
+fn update_merge_with_a_key_that_cannot_read_secrets_still_refuses_for_file_variables() {
+    let mock = Mock::start(vec![
+        me_with_scopes(json!(["services:write"])),
+        ("GET", SVC, 200, repo_service()),
+        ("PATCH", SVC, 200, repo_service()),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "new.env", "A=9\n");
+    let (code, _, err) = env.json(&[
+        "services",
+        "update",
+        "--project-id",
+        "p1",
+        "--service-id",
+        "s1",
+        "--secret-env-file",
+        &file,
+        "--merge-env",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 3, "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "PATCH"));
+}
+
+#[test]
+fn update_with_an_env_file_and_no_variables_in_it_is_not_a_silent_no_op() {
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, repo_service()), ("PATCH", SVC, 200, repo_service())]);
+    let env = Env::new(&mock).with_account();
+    let file = file_in(&env, "empty.env", "\n");
+    let (code, _, err) = env.json(&[
+        "services",
+        "update",
+        "--project-id",
+        "p1",
+        "--service-id",
+        "s1",
+        "--env-file",
+        &file,
+        "--merge-env",
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("defines no variables"), "{err}");
+}
+
+#[test]
+fn presets_deploy_takes_env_files_as_overrides() {
+    let mock = Mock::start(vec![me(), catalog(), ("POST", "projects/p1/services", 201, json!({"id": "svc1"}))]);
+    let env = Env::new(&mock).with_account();
+    let secrets = file_in(&env, "keys.env", "OPENAI_API_KEY=sk-from-file\n");
+    let (code, _, err) = env.json(&[
+        "presets",
+        "deploy",
+        "n8n",
+        "--project-id",
+        "p1",
+        "--server-id",
+        "srv1",
+        "--secret-env-file",
+        &secrets,
+        "-a",
+        "work",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let body = mock.last("POST").body.unwrap();
+    assert_eq!(body["env"], json!([{"key": "OPENAI_API_KEY", "value": "sk-from-file", "secret": true}]));
+}

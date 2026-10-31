@@ -5,6 +5,7 @@ mod cli;
 mod client;
 mod commands;
 mod config;
+mod envfile;
 mod error;
 mod output;
 mod patharg;

@@ -137,6 +137,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 | `sliplane services attach-volume --project-id <p> --service-id <s> --volume <id-or-name>:/path` | Mount a volume and redeploy |
 | `sliplane services update-volume --project-id <p> --service-id <s> --volume-id <v> --mount-path /path` | Change a mount path and redeploy |
 | `sliplane services detach-volume --project-id <p> --service-id <s> --volume-id <v>` | Unmount a volume and redeploy (the data is kept) |
+| `sliplane services create\|update … --env-file <path> --secret-env-file <path>` | Read plain / secret variables from dotenv files (repeatable; also on `presets deploy`). `KEY=VALUE`, `#` comments, quotes, no interpolation; a bare `KEY` is an error. The command line wins over files. Values never reach argv or error messages |
 
 ### Presets (one-click apps)
 
@@ -231,6 +232,7 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - Passing `--env` to `services update` replaces the entire environment array. The CLI warns and aborts if unmentioned variables would be dropped.
    - Use `--merge-env` to preserve unmentioned variables, or `--replace-env` if removal was intentional.
    - Use `services set-env` to change a single variable safely.
+   - `--env-file` and `--secret-env-file` feed the same list, so every protection above applies to variables read from files.
 2. **Preserving Secrets**:
    - In Sliplane, secret values are write-only and read back as empty strings. `--merge-env` safely retains existing secrets without exposing or overwriting them.
    - API keys have per-area permissions, and **Secrets: Read** is one of them. Without it *every* environment value and database password reads back empty, not only the secret ones, so `--merge-env` would overwrite plain variables with nothing. The CLI refuses that (`auth_required`) and points you to `services set-env` or a key with Secrets: Read. `sliplane me` lists a key's scopes, and `accounts add` / `accounts test` warn when `secrets:read` is missing.

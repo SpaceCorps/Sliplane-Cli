@@ -356,6 +356,17 @@ pub struct WaitFlags {
     pub timeout: Option<u64>,
 }
 
+/// Environment variables read from dotenv files, for the commands that take `--env`.
+#[derive(Args, Default)]
+pub struct EnvFiles {
+    /// Read plain environment variables from a dotenv file: KEY=VALUE lines, # comments, quotes, no interpolation (repeatable). A bare KEY is an error. Flags win over files
+    #[arg(long, value_name = "PATH")]
+    pub env_file: Vec<String>,
+    /// Same as --env-file, but every variable in the file is secret (repeatable). Keeps values out of argv
+    #[arg(long, value_name = "PATH")]
+    pub secret_env_file: Vec<String>,
+}
+
 /// Flags shared by `services create` and `services update`.
 #[derive(Args)]
 pub struct Deploy {
@@ -432,6 +443,8 @@ pub enum Services {
         /// Secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Volume mount as id:/path or name:/path (repeatable). A name resolves to the existing volume of that name
         #[arg(long = "volume", value_name = "VOLUME")]
         volumes: Vec<String>,
@@ -455,6 +468,8 @@ pub enum Services {
         /// Secret environment variable (repeatable). Shares one list with --env
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Allow --env/--secret-env to drop variables not listed. Without it, an update that would delete a variable is refused
         #[arg(long, conflicts_with = "merge_env")]
         replace_env: bool,
@@ -603,6 +618,7 @@ pub enum Services {
 // presets
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
 pub enum Presets {
     /// List the presets. Needs no account: the catalog is public
     List {
@@ -635,6 +651,8 @@ pub enum Presets {
         /// Set or override a secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Do not expose the service publicly, even if the preset does (databases are public TCP by default)
         #[arg(long)]
         private: bool,

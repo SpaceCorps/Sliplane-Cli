@@ -148,10 +148,10 @@ than constructing them. There is no API to get a single project or bucket by id 
 
 ## Changing things
 
-    sliplane services create --project-id <id> --name <name> --server-id <id> (--image <url> | --repo <url>) ...
-    sliplane services update --project-id <id> --service-id <id> ...
+    sliplane services create --project-id <id> --name <name> --server-id <id> (--image <url> | --repo <url>) [--env-file <path>] [--secret-env-file <path>] ...
+    sliplane services update --project-id <id> --service-id <id> [--env-file <path>] [--secret-env-file <path>] ...
     sliplane services deploy --project-id <id> --service-id <id> [--tag <tag>] [--wait [--timeout 600]]
-    sliplane presets deploy <preset-id> --project-id <id> --server-id <id> -a <account> [--name <n>] [--env K=V] [--secret-env K=V] [--private] [--dry-run] [--wait]
+    sliplane presets deploy <preset-id> --project-id <id> --server-id <id> -a <account> [--name <n>] [--env K=V] [--secret-env K=V] [--env-file <path>] [--secret-env-file <path>] [--private] [--dry-run] [--wait]
     sliplane services set-env --project-id <id> --service-id <id> --key K --value V [--secret]
     sliplane services delete-env --project-id <id> --service-id <id> --key K
     sliplane services pause|unpause --project-id <id> --service-id <id>
@@ -197,6 +197,18 @@ Six behaviours that will otherwise cost you data:
    username to connect with. A key that is still attached to a service cannot be deleted
    (`409 ssh_key_in_use`); detach it first. `--expires-at` makes a key delete itself, and its
    access, between 5 minutes and 30 days from now.
+
+**Environment files.** `--env-file <path>` (plain variables) and `--secret-env-file <path>`
+(secret ones) read dotenv files on `services create`, `services update` and `presets deploy`;
+both repeat. Use them instead of `--env`/`--secret-env` for anything secret: a value on the
+command line is in the process list, the shell history and your transcript. Syntax: `KEY=VALUE`
+per line, `#` comment lines, an optional `export `, `"double quotes"` (escapes `\n \r \t \\ \"`)
+and `'single quotes'` (literal), quoted values may span lines, and **nothing is interpolated**:
+`$HOME` stays `$HOME`. A bare `KEY` line (no `=`), an unquoted value containing ` #`, and an
+unclosed quote are errors that name the file and line, never the value. The command line wins
+over the files and a later file over an earlier one; each replaced key is named in a `note:` on
+stderr. File variables join the same list as `--env`, so `services update` still refuses to drop
+variables without `--merge-env` or `--replace-env`.
 
 **`--wait`** (on `services deploy`, `services create` and `presets deploy`) blocks until the
 deploy reports success, then prints `status: live` and the event. It exits 1 if the deploy fails

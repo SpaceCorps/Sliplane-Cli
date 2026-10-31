@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use crate::cli::{Deploy, ServiceRef, Services, WaitFlags};
+use crate::cli::{Deploy, EnvFiles, ServiceRef, Services, WaitFlags};
 use crate::client::{Client, query, seg};
 use crate::commands::{client, done, logs, metrics_query, print, wait};
 use crate::error::{Error, ErrorCode, Result};
 use crate::resolve::{self, Kind};
-use crate::{account, obj, patharg, timeparse};
+use crate::{account, envfile, obj, patharg, timeparse};
 
 fn timeout(w: &WaitFlags) -> Duration {
     Duration::from_secs(w.timeout.unwrap_or(wait::DEFAULT_TIMEOUT_SECS))
@@ -38,12 +38,14 @@ pub fn run(mut c: Services) -> Result<()> {
             list(&client, Some(id).filter(|i| !i.is_empty()).as_deref())
         }
         Services::Get(s) => print(client(&s.a)?.get(&path(&s, ""))?),
-        Services::Create { p, name, srv, d, public, protocol, env, secret_env, volumes, w, a } => {
+        Services::Create { p, name, srv, d, public, protocol, env, secret_env, ef, volumes, w, a } => {
             let client = client(&a)?;
+            // Files are read before anything is looked up, so a bad one costs no request.
+            let env = env_vars(&env, &secret_env, &ef)?;
             let (mut project_id, mut server_id) = (p.project_id, srv.server_id);
             resolve::one(&client, Kind::Project, &mut project_id, &p.project)?;
             resolve::one(&client, Kind::Server, &mut server_id, &srv.server)?;
-            let body = create_body(&client, name, &server_id, &d, public, protocol, &env, &secret_env, &volumes)?;
+            let body = create_body(&client, name, &server_id, &d, public, protocol, env, &volumes)?;
             let mut service = client.post(&format!("projects/{}/services", seg(&project_id)), &body)?;
             if w.wait {
                 let id = service.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -60,8 +62,8 @@ pub fn run(mut c: Services) -> Result<()> {
             }
             print(service)
         }
-        Services::Update { s, name, d, env, secret_env, replace_env, merge_env } => {
-            update(&s, name, &d, &env, &secret_env, replace_env, merge_env)
+        Services::Update { s, name, d, env, secret_env, ef, replace_env, merge_env } => {
+            update(&s, name, &d, env_vars(&env, &secret_env, &ef)?, replace_env, merge_env)
         }
         Services::Delete(s) => {
             let r = client(&s.a)?.delete(&path(&s, ""))?;
@@ -252,6 +254,11 @@ pub(crate) fn parse_env(env: &[String], secret_env: &[String]) -> Result<Vec<Val
     env.iter().map(|e| parse(e, false)).chain(secret_env.iter().map(|e| parse(e, true))).collect()
 }
 
+/// `--env`, `--secret-env`, and the dotenv files, as one list: the flags win over the files.
+pub(crate) fn env_vars(env: &[String], secret_env: &[String], files: &EnvFiles) -> Result<Vec<Value>> {
+    envfile::combine(parse_env(env, secret_env)?, files)
+}
+
 fn nonempty(s: &Option<String>) -> Option<&str> {
     s.as_deref().filter(|v| !v.is_empty())
 }
@@ -297,8 +304,7 @@ fn create_body(
     d: &Deploy,
     public: bool,
     protocol: Option<String>,
-    env: &[String],
-    secret_env: &[String],
+    env: Vec<Value>,
     volumes: &[String],
 ) -> Result<Value> {
     let mut body = obj! { "name" => name, "serverId" => server_id };
@@ -347,7 +353,6 @@ fn create_body(
         body["cmd"] = json!(c);
     }
 
-    let env = parse_env(env, secret_env)?;
     if !env.is_empty() {
         body["env"] = Value::Array(env);
     }
@@ -445,8 +450,7 @@ fn update(
     s: &ServiceRef,
     name: Option<String>,
     d: &Deploy,
-    env: &[String],
-    secret_env: &[String],
+    supplied: Vec<Value>,
     replace_env: bool,
     merge_env: bool,
 ) -> Result<()> {
@@ -528,9 +532,10 @@ fn update(
     }
     body["deployment"] = Value::Object(dep);
 
-    let supplied = parse_env(env, secret_env)?;
     if supplied.is_empty() && (replace_env || merge_env) {
-        return Err(Error::invalid("--replace-env and --merge-env need at least one --env or --secret-env."));
+        return Err(Error::invalid(
+            "--replace-env and --merge-env need at least one --env, --secret-env, --env-file or --secret-env-file.",
+        ));
     }
     if !supplied.is_empty() {
         body["env"] = Value::Array(env_for_update(&mut current, supplied, replace_env, merge_env)?);
