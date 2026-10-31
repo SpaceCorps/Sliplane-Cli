@@ -200,6 +200,14 @@ Six behaviours that will otherwise cost you data:
    (`409 ssh_key_in_use`); detach it first. `--expires-at` makes a key delete itself, and its
    access, between 5 minutes and 30 days from now.
 
+**Image references.** `--image` (on `services create` and `services update`) expands Docker Hub
+shorthand: `nginx` becomes `docker.io/library/nginx:latest`, `nginx:1.27` becomes
+`docker.io/library/nginx:1.27`, `user/app` becomes `docker.io/user/app:latest`. A reference
+whose first part is a registry host (it contains `.` or `:`, or is `localhost`) is sent exactly
+as written, as is a digest (`@sha256:...`). When the value changed, stderr has a
+`note: --image '...' was sent as '...'` line. Spell out the full reference for any registry
+other than Docker Hub.
+
 **Environment files.** `--env-file <path>` (plain variables) and `--secret-env-file <path>`
 (secret ones) read dotenv files on `services create`, `services update` and `presets deploy`;
 both repeat. Use them instead of `--env`/`--secret-env` for anything secret: a value on the

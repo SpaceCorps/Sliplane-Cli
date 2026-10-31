@@ -124,7 +124,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 |:---|:---|
 | `sliplane services list --project-id <id>` | List services within a project |
 | `sliplane services get --project-id <p> --service-id <s>` | Fetch detailed service configuration |
-| `sliplane services create --project-id <p> (--image <img> \| --repo <r>)` | Deploy a new container service |
+| `sliplane services create --project-id <p> (--image <img> \| --repo <r>)` | Deploy a new container service. Docker Hub shorthand is expanded (`nginx` is `docker.io/library/nginx:latest`, `user/app` is `docker.io/user/app:latest`); a reference with a registry host is sent as written |
 | `sliplane services update --project-id <p> --service-id <s>` | Update service deployment settings (see safeguards below) |
 | `sliplane services deploy --project-id <p> --service-id <s> [--wait]` | Trigger immediate redeployment; `--wait` blocks until it succeeds or fails |
 | `sliplane services logs --project-id <p> --service-id <s> [--since 30m] [--to <ts>]` | Read container logs (paginated, 500 lines per call) |

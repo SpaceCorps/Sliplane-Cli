@@ -12,7 +12,7 @@ use crate::client::{Client, query, seg};
 use crate::commands::{client, done, logs, metrics_query, print, wait};
 use crate::error::{Error, ErrorCode, Result};
 use crate::resolve::{self, Kind};
-use crate::{account, envfile, obj, patharg, timeparse};
+use crate::{account, envfile, image, obj, patharg, timeparse};
 
 fn timeout(w: &WaitFlags) -> Duration {
     Duration::from_secs(w.timeout.unwrap_or(wait::DEFAULT_TIMEOUT_SECS))
@@ -321,7 +321,7 @@ fn create_body(
             if repo_only_flags(d) {
                 return Err(Error::invalid(IMAGE_FLAGS_ERROR));
             }
-            dep.insert("url".into(), json!(image));
+            dep.insert("url".into(), json!(image::normalize_noted(image)));
             if let Some(c) = nonempty(&d.registry_credential_id) {
                 dep.insert("registryAuthenticationId".into(), json!(c));
             }
@@ -480,6 +480,7 @@ fn update(
         if repo_only_flags(d) {
             return Err(Error::invalid(IMAGE_FLAGS_ERROR));
         }
+        let image = image::normalize_noted(image);
         dep.insert("url".into(), json!(image));
         match nonempty(&d.registry_credential_id) {
             Some(c) => {
@@ -490,7 +491,7 @@ fn update(
                 let old = current.get()?.get("deployment").cloned().unwrap_or(Value::Null);
                 let old_url = old.get("url").and_then(Value::as_str).unwrap_or("");
                 if let Some(c) = old.get("registryAuthenticationId").filter(|v| v.is_string())
-                    && registry_host(old_url) == registry_host(image)
+                    && registry_host(old_url) == registry_host(&image)
                 {
                     dep.insert("registryAuthenticationId".into(), c.clone());
                 }

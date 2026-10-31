@@ -529,7 +529,7 @@ fn create_requires_a_deployment_and_resolves_volume_names() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(out["id"], "s9");
     let body = mock.last("POST").body.unwrap();
-    assert_eq!(body["deployment"], json!({"url": "nginx:latest"}));
+    assert_eq!(body["deployment"], json!({"url": "docker.io/library/nginx:latest"}));
     assert_eq!(body["network"], json!({"public": true, "protocol": "http"}));
     assert_eq!(
         body["volumes"],
@@ -2027,4 +2027,116 @@ fn credentials_errors_do_not_echo_the_token_back() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("ghp_leaky"), "{stderr}");
     assert!(stderr.contains("[redacted]"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --image shorthand
+
+#[test]
+fn create_expands_docker_hub_shorthand_and_says_so() {
+    let mock = Mock::start(vec![me(), ("POST", "projects/p1/services", 201, json!({"id": "s9"}))]);
+    let env = Env::new(&mock).with_account();
+    let sent = |image: &str| {
+        let out = env.run(&create_args_with_image(image));
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+        (mock.last("POST").body.unwrap()["deployment"]["url"].as_str().unwrap().to_string(), stderr)
+    };
+
+    let (url, stderr) = sent("nginx");
+    assert_eq!(url, "docker.io/library/nginx:latest");
+    assert!(stderr.contains("note: --image 'nginx' was sent as 'docker.io/library/nginx:latest'"), "{stderr}");
+
+    assert_eq!(sent("nginx:1.27").0, "docker.io/library/nginx:1.27");
+    assert_eq!(sent("user/app").0, "docker.io/user/app:latest");
+
+    // A registry host means the reference is complete: sent as written, and no note.
+    for image in ["ghcr.io/o/r:tag", "localhost:5000/app", "docker.io/library/nginx:1.27"] {
+        let (url, stderr) = sent(image);
+        assert_eq!(url, image);
+        assert!(!stderr.contains("note: --image"), "{image}: {stderr}");
+    }
+    let digest = "ghcr.io/o/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert_eq!(sent(digest).0, digest);
+    let hub_digest = "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert_eq!(sent(hub_digest).0, format!("docker.io/library/{hub_digest}"));
+}
+
+fn create_args_with_image(image: &str) -> Vec<&str> {
+    vec![
+        "services",
+        "create",
+        "--project-id",
+        "p1",
+        "--name",
+        "web",
+        "--server-id",
+        "srv1",
+        "--image",
+        image,
+        "-a",
+        "work",
+        "--json",
+    ]
+}
+
+#[test]
+fn update_expands_the_image_and_keeps_credentials_in_the_same_registry() {
+    let current =
+        json!({"id": "s1", "deployment": {"url": "docker.io/acme/app:1", "registryAuthenticationId": "cred_1"}});
+    let mock = Mock::start(vec![me(), ("GET", SVC, 200, current.clone()), ("PATCH", SVC, 200, current)]);
+    let env = Env::new(&mock).with_account();
+    let update = |image: &str| {
+        let out = env.run(&[
+            "services",
+            "update",
+            "--project-id",
+            "p1",
+            "--service-id",
+            "s1",
+            "--image",
+            image,
+            "-a",
+            "work",
+            "--json",
+        ]);
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+        (mock.last("PATCH").body.unwrap()["deployment"].clone(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+
+    // `acme/app:2` is Docker Hub like the stored `docker.io/acme/app:1`, so the credentials stay.
+    let (dep, stderr) = update("acme/app:2");
+    assert_eq!(dep, json!({"url": "docker.io/acme/app:2", "registryAuthenticationId": "cred_1"}));
+    assert!(stderr.contains("note: --image 'acme/app:2' was sent as 'docker.io/acme/app:2'"), "{stderr}");
+
+    // Another registry drops them, exactly as before.
+    let (dep, stderr) = update("ghcr.io/acme/app:2");
+    assert_eq!(dep, json!({"url": "ghcr.io/acme/app:2"}));
+    assert!(!stderr.contains("note: --image"), "{stderr}");
+}
+
+#[test]
+fn a_rejected_image_command_says_nothing_about_the_image() {
+    // --image with --repo is refused before the value is looked at, so no note is printed.
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock).with_account();
+    let out = env.run(&[
+        "services",
+        "create",
+        "--project-id",
+        "p1",
+        "--name",
+        "web",
+        "--server-id",
+        "srv1",
+        "--image",
+        "nginx",
+        "--repo",
+        "https://github.com/o/r",
+        "-a",
+        "work",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("note: --image"));
 }

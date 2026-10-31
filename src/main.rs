@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod envfile;
 mod error;
+mod image;
 mod output;
 mod patharg;
 mod presets;

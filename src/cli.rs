@@ -370,7 +370,7 @@ pub struct EnvFiles {
 /// Flags shared by `services create` and `services update`.
 #[derive(Args)]
 pub struct Deploy {
-    /// Container image URL (e.g. docker.io/library/nginx:latest)
+    /// Container image, e.g. ghcr.io/org/app:1.2. Docker Hub shorthand is expanded: nginx -> docker.io/library/nginx:latest, user/app -> docker.io/user/app:latest. A reference with a registry host is sent as written
     #[arg(long, value_name = "URL")]
     pub image: Option<String>,
     /// Repository URL (e.g. https://github.com/user/repo)
