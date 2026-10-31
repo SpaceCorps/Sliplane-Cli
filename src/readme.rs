@@ -91,6 +91,25 @@ Read-only keys can only read: anything that changes state fails with `auth_requi
 `sliplane me` lists the scopes of the key you are using, and `accounts add` / `accounts test`
 warn when it lacks `secrets:read`.
 
+## Names or ids
+
+Every `--project-id`, `--service-id`, `--server-id`, `--postgres-id` and `--bucket-id` has a name
+twin that takes a name **or** an id: `--project`, `--service`, `--server`, `--postgres`, `--bucket`.
+
+    sliplane services get --project Main --service web -a work
+    sliplane services logs --service web --since 10m -a work      # the project is looked up
+    sliplane services get --service-id service_abc -a work         # so is this one
+
+An id is matched first, then an exact, case-sensitive name. Two things with the same name is
+`invalid_input` (exit 6) and the detail lists their ids: pass the one you mean with `--*-id`, or
+add `--project` to tell two services apart. A name that matches nothing is `not_found` (exit 4)
+and the detail lists what does exist. Never guess between candidates, and never retry an
+ambiguous name with a different guess.
+
+A name costs a listing (an id given in full costs nothing). When a name is resolved, stderr gets a
+`note: --service 'web' is service_abc in project project_xyz` line. Read it before a delete: it is
+the only receipt that the name found the thing you meant.
+
 ## Reading
 
     sliplane me -a <account>

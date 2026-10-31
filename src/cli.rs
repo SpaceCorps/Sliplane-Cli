@@ -180,9 +180,8 @@ pub enum Projects {
     },
     /// Update a project name
     Update {
-        /// The ID of the project to update
-        #[arg(long, value_name = "ID")]
-        project_id: String,
+        #[command(flatten)]
+        p: ProjectRef,
         /// The new name of the project
         #[arg(long)]
         name: String,
@@ -191,12 +190,33 @@ pub enum Projects {
     },
     /// Delete a project (it must contain no services)
     Delete {
-        /// The ID of the project to delete
-        #[arg(long, value_name = "ID")]
-        project_id: String,
+        #[command(flatten)]
+        p: ProjectRef,
         #[command(flatten)]
         a: Account,
     },
+}
+
+/// A project, by id or by name. Given ids, no lookup happens; see `resolve`.
+#[derive(Args, Clone)]
+pub struct ProjectRef {
+    /// The ID of the project
+    #[arg(long, value_name = "ID", default_value = "", hide_default_value = true, conflicts_with = "project")]
+    pub project_id: String,
+    /// The project's name (or its ID), instead of --project-id
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+}
+
+/// A server, by id or by name.
+#[derive(Args, Clone)]
+pub struct ServerRef {
+    /// The ID of the server
+    #[arg(long, value_name = "ID", default_value = "", hide_default_value = true, conflicts_with = "server")]
+    pub server_id: String,
+    /// The server's name (or its ID), instead of --server-id
+    #[arg(long, value_name = "NAME")]
+    pub server: Option<String>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -205,8 +225,11 @@ pub enum Projects {
 #[derive(Args)]
 pub struct ServerId {
     /// The ID of the server
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", default_value = "", hide_default_value = true, conflicts_with = "server")]
     pub server_id: String,
+    /// The server's name (or its ID), instead of --server-id
+    #[arg(long, value_name = "NAME")]
+    pub server: Option<String>,
     #[command(flatten)]
     pub a: Account,
 }
@@ -303,14 +326,21 @@ pub enum Servers {
 // ---------------------------------------------------------------------------------------------
 // services
 
+/// A service, by id or by name. The project is found when it is not given.
 #[derive(Args)]
 pub struct ServiceRef {
-    /// The ID of the project
-    #[arg(long, value_name = "ID")]
+    /// The ID of the project (optional: it is looked up from the service when omitted)
+    #[arg(long, value_name = "ID", default_value = "", hide_default_value = true, conflicts_with = "project")]
     pub project_id: String,
+    /// The project's name (or its ID), instead of --project-id
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
     /// The ID of the service
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", default_value = "", hide_default_value = true, conflicts_with = "service")]
     pub service_id: String,
+    /// The service's name (or its ID), instead of --service-id. A name two services share is an error
+    #[arg(long, value_name = "NAME")]
+    pub service: Option<String>,
     #[command(flatten)]
     pub a: Account,
 }
@@ -369,8 +399,11 @@ pub enum Services {
     /// List services in a project, or in every project
     List {
         /// The ID of the project (lists all projects if omitted)
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", conflicts_with = "project")]
         project_id: Option<String>,
+        /// The project's name (or its ID), instead of --project-id
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
         #[command(flatten)]
         a: Account,
     },
@@ -378,15 +411,13 @@ pub enum Services {
     Get(ServiceRef),
     /// Create a new service (10 per minute)
     Create {
-        /// The ID of the project
-        #[arg(long, value_name = "ID")]
-        project_id: String,
+        #[command(flatten)]
+        p: ProjectRef,
         /// The name of the service
         #[arg(long)]
         name: String,
-        /// The ID of the server to run the service on
-        #[arg(long, value_name = "ID")]
-        server_id: String,
+        #[command(flatten)]
+        srv: ServerRef,
         #[command(flatten)]
         d: Deploy,
         /// Make the service publicly accessible
@@ -591,12 +622,10 @@ pub enum Presets {
     Deploy {
         /// The preset id (see 'sliplane presets list')
         id: String,
-        /// The ID of the project to create the service in
-        #[arg(long, value_name = "ID")]
-        project_id: String,
-        /// The ID of the server to run it on
-        #[arg(long, value_name = "ID")]
-        server_id: String,
+        #[command(flatten)]
+        p: ProjectRef,
+        #[command(flatten)]
+        srv: ServerRef,
         /// Service name (default: the preset's name plus a random suffix)
         #[arg(long)]
         name: Option<String>,
@@ -625,8 +654,11 @@ pub enum Presets {
 #[derive(Args)]
 pub struct PgId {
     /// The ID of the Postgres database
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", default_value = "", hide_default_value = true, conflicts_with = "postgres")]
     pub postgres_id: String,
+    /// The database's name (or its ID), instead of --postgres-id
+    #[arg(long, value_name = "NAME")]
+    pub postgres: Option<String>,
     #[command(flatten)]
     pub a: Account,
 }
@@ -750,8 +782,11 @@ pub enum Postgres {
 #[derive(Args)]
 pub struct BucketId {
     /// The ID of the bucket
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", default_value = "", hide_default_value = true, conflicts_with = "bucket")]
     pub bucket_id: String,
+    /// The bucket's name (or its ID), instead of --bucket-id
+    #[arg(long, value_name = "NAME")]
+    pub bucket: Option<String>,
     #[command(flatten)]
     pub a: Account,
 }
@@ -949,6 +984,89 @@ pub enum SshKeys {
         #[command(flatten)]
         a: Account,
     },
+}
+
+// ---------------------------------------------------------------------------------------------
+// The reference each command carries, so names can be resolved to ids once, before dispatch.
+// No wildcard arms: a new command has to say whether it names a resource.
+
+impl Servers {
+    pub fn server_mut(&mut self) -> Option<&mut ServerId> {
+        match self {
+            Servers::List(_) | Servers::Create { .. } => None,
+            Servers::Get(s) | Servers::Delete(s) | Servers::Volumes(s) => Some(s),
+            Servers::Rescale { s, .. }
+            | Servers::RescaleDisk { s, .. }
+            | Servers::Metrics { s, .. }
+            | Servers::CreateVolume { s, .. }
+            | Servers::RenameVolume { s, .. } => Some(s),
+        }
+    }
+}
+
+impl Services {
+    pub fn service_mut(&mut self) -> Option<&mut ServiceRef> {
+        match self {
+            Services::List { .. } | Services::Create { .. } => None,
+            Services::Get(s)
+            | Services::Delete(s)
+            | Services::Pause(s)
+            | Services::Unpause(s)
+            | Services::Events(s)
+            | Services::ListEnv(s)
+            | Services::SshKeys(s)
+            | Services::RotateDeployHook(s) => Some(s),
+            Services::Update { s, .. }
+            | Services::Deploy { s, .. }
+            | Services::Logs { s, .. }
+            | Services::Metrics { s, .. }
+            | Services::SetEnv { s, .. }
+            | Services::DeleteEnv { s, .. }
+            | Services::AddDomain { s, .. }
+            | Services::RemoveDomain { s, .. }
+            | Services::AttachVolume { s, .. }
+            | Services::UpdateVolume { s, .. }
+            | Services::DetachVolume { s, .. }
+            | Services::AttachSshKey { s, .. }
+            | Services::DetachSshKey { s, .. } => Some(s),
+        }
+    }
+}
+
+impl Postgres {
+    pub fn database_mut(&mut self) -> Option<&mut PgId> {
+        match self {
+            Postgres::List(_) | Postgres::Create { .. } => None,
+            Postgres::Get(p)
+            | Postgres::Delete(p)
+            | Postgres::Pause(p)
+            | Postgres::Unpause(p)
+            | Postgres::Restart(p)
+            | Postgres::RotateCredentials(p)
+            | Postgres::Connections(p)
+            | Postgres::RelationSizes(p)
+            | Postgres::SlowQueries(p)
+            | Postgres::TopQueries(p)
+            | Postgres::RestoreWindow(p) => Some(p),
+            Postgres::Update { p, .. }
+            | Postgres::Logs { p, .. }
+            | Postgres::Metrics { p, .. }
+            | Postgres::Restore { p, .. } => Some(p),
+        }
+    }
+}
+
+impl Buckets {
+    pub fn bucket_mut(&mut self) -> Option<&mut BucketId> {
+        match self {
+            Buckets::List(_) | Buckets::Create { .. } => None,
+            Buckets::Delete(b) | Buckets::Cors(b) | Buckets::DeleteCors(b) | Buckets::Keys(b) => Some(b),
+            Buckets::Update { b, .. }
+            | Buckets::SetCors { b, .. }
+            | Buckets::CreateKey { b, .. }
+            | Buckets::DeleteKey { b, .. } => Some(b),
+        }
+    }
 }
 
 #[cfg(test)]
