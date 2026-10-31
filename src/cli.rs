@@ -81,6 +81,9 @@ pub enum Command {
     SshKeys(SshKeys),
     /// List standard prices for servers, Postgres and object storage
     Pricing(Account),
+    /// Upload, download, list and delete files in a bucket over the S3 protocol
+    #[command(subcommand)]
+    S3(S3),
     /// Update this executable to the latest release, after verifying its SHA-256 checksum. Needs no account
     Update(Update),
     /// Point a project's coding agent at this CLI's manual
@@ -1167,6 +1170,105 @@ impl Buckets {
             | Buckets::SetCors { b, .. }
             | Buckets::CreateKey { b, .. }
             | Buckets::DeleteKey { b, .. } => Some(b),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// s3
+
+#[derive(Args)]
+pub struct S3Bucket {
+    #[command(flatten)]
+    pub b: BucketId,
+    /// Region the requests are signed for. The endpoint decides where they go; change this only
+    /// if an error names another region
+    #[arg(long, value_name = "REGION", default_value = "us-east-1")]
+    pub region: String,
+}
+
+#[derive(Subcommand)]
+pub enum S3 {
+    /// Create an S3 key for a bucket and keep it in the OS keystore (once per bucket)
+    Connect {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// How long to wait for the new key to become usable
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        timeout: u64,
+    },
+    /// Forget the stored S3 key for a bucket (does not revoke it)
+    Disconnect(BucketId),
+    /// List files in a bucket
+    #[command(visible_alias = "list")]
+    Ls {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// Only keys that start with this
+        #[arg(long, value_name = "PREFIX")]
+        prefix: Option<String>,
+        /// List everything below the prefix instead of folding it at each '/'
+        #[arg(short, long)]
+        recursive: bool,
+        /// Stop after this many entries (0 for no limit)
+        #[arg(long, value_name = "N", default_value_t = 1000)]
+        limit: usize,
+        /// Continue from the nextToken of an earlier, truncated listing
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
+    },
+    /// Upload one file (up to 5 GiB)
+    Upload {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// The local file
+        #[arg(long, value_name = "PATH")]
+        file: String,
+        /// The object key (default: the file's name)
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
+        /// Content-Type to store with the object
+        #[arg(long, value_name = "MIME", default_value = "application/octet-stream")]
+        content_type: String,
+        /// Replace the object if it exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Download one file
+    Download {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// The object key
+        #[arg(long, value_name = "KEY")]
+        key: String,
+        /// Where to write it: a file, a directory, or - for stdout (default: the key's file name here)
+        #[arg(long, value_name = "PATH")]
+        out: Option<String>,
+        /// Replace the local file if it exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Delete files (irreversible in an unversioned bucket, and asks nothing)
+    #[command(visible_alias = "delete")]
+    Rm {
+        #[command(flatten)]
+        s: S3Bucket,
+        /// The object key (repeatable)
+        #[arg(long = "key", value_name = "KEY", required = true)]
+        keys: Vec<String>,
+    },
+}
+
+impl S3 {
+    /// Every `s3` command names a bucket.
+    pub fn bucket_mut(&mut self) -> &mut BucketId {
+        match self {
+            S3::Disconnect(b) => b,
+            S3::Connect { s, .. }
+            | S3::Ls { s, .. }
+            | S3::Upload { s, .. }
+            | S3::Download { s, .. }
+            | S3::Rm { s, .. } => &mut s.b,
         }
     }
 }

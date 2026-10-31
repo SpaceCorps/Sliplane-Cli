@@ -35,6 +35,7 @@ export SLIPLANE_CONFIG_DIR=$(mktemp -d) SLIPLANE_SECRET_STORE=plaintext
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE=1` | Permits the plaintext fallback where no keystore exists |
 | `SLIPLANE_API_URL` | Overrides the API base URL - how `tests/cli.rs` points at its mock |
 | `SLIPLANE_PRESETS_URL` | Overrides the preset catalog URL, the same way |
+| `SLIPLANE_S3_PAGE_SIZE` | Entries per `s3 ls` request (1-1000). Only the tests set it, to see a listing continue |
 | `SLIPLANE_RELEASES_URL` | Overrides the GitHub releases page for `sliplane update` (and the installers); allows plain http |
 
 There is deliberately **no** `SLIPLANE_API_KEY`. See the invariants below.
@@ -50,10 +51,13 @@ src/
     accounts.rs    accounts add|list|test|remove
     services.rs    services *, including the create/update logic
     presets.rs     presets list|show|deploy
+    s3.rs          s3 connect|disconnect|ls|upload|download|rm: the stored key, and the file commands
     logs.rs        services logs --follow: the poll loop and its dedupe
     postgres.rs    postgres allowlist (and its source-IP probe), logs --since, restore's default point
     wait.rs        --wait: poll events until a deploy has an outcome
   presets.rs       the preset catalog: fetch, validate, generate secrets, turn a preset into a request
+  s3.rs            the S3 client: its own HTTP agent, listing/XML parsing, S3 error -> ErrorCode
+  sigv4.rs         AWS Signature V4 (header-based) and the vectors it is tested against
   timeparse.rs     durations (30m) and RFC 3339, without a date-time crate
   client.rs        blocking HTTP (ureq + rustls), status -> ErrorCode, API error hints
   error.rs         ErrorCode (= exit code) and Error {message, detail, remediation}
@@ -131,6 +135,15 @@ resending the current values is correct either way.
 installation directory before this program starts, and the resulting service deploys happily and
 fails every healthcheck with nothing in the output to explain why.
 
+**The S3 key pair and the API key never meet.** `s3.rs` is handed an endpoint, a signing region and an S3
+key pair, and has never heard of the API key; `commands/s3.rs` is the only place that holds both. The S3
+agent follows no redirects (a signed request must not be replayed somewhere it was not signed for), has no
+global timeout (a 5 GiB transfer takes as long as it takes), and refuses plain HTTP except to a loopback
+host. The pair lives in the keystore as JSON under `secrets::s3_key(account, bucketId)` and nowhere else.
+Nothing makes a key as a side effect: only `s3 connect` does, because creating a credential is the human's
+decision. There is deliberately no `SLIPLANE_S3_ACCESS_KEY_ID` override, for the reason there is no
+`SLIPLANE_API_KEY`.
+
 ## Traps in this codebase
 
 **clap reserves the id `version`.** A field named `version` panics at startup ("Argument names must
@@ -179,6 +192,24 @@ second poll takes three seconds.
 
 **Never follow logs without a bound in a test or an agent flow.** `--follow` with no `--for` runs until
 interrupted. The tests use `--for 1s`.
+
+**S3 paths are signed as they are sent.** S3 does not normalise or double-encode the path, so `sigv4::sign`
+takes the canonical URI already encoded and `sigv4::uri_encode` is the only encoder; the query string that is
+sent is the very text that was signed. `Host` is set by hand to the endpoint minus its default port, because
+that exact string is both signed and sent. The payload hash of a PUT is a real SHA-256 from a first pass over
+the file, so a file that changes between the passes is refused by the server instead of being stored torn.
+
+**`ureq` decompresses `Content-Encoding: gzip` whatever it was asked, and then drops `Content-Length`.** S3 always
+sends a length, so `ObjectStore::get` treats its absence as that case and refuses: a download must be the
+stored bytes or an error. Do not "fix" it by accepting the decoded body.
+
+**The S3 tests have a real-server mode.** `cargo test s3_` runs against an in-process S3 that verifies every
+signature with code of its own. Point the same scenario at a real server with
+`SLIPLANE_TEST_S3_ENDPOINT=http://127.0.0.1:19000 SLIPLANE_TEST_S3_BUCKET=<existing bucket>
+SLIPLANE_TEST_S3_ACCESS_KEY=... SLIPLANE_TEST_S3_SECRET_KEY=...` (use a secret that differs from the access
+key, or the "secret was printed" check trips on a coincidence); add `SLIPLANE_TEST_S3_MANY=1` for the 1,010-key
+pagination test. `minio/minio` is gone from Docker Hub; `bitnamilegacy/minio` with `MINIO_DEFAULT_BUCKETS` works.
+The tests turn `sha2` up to `opt-level = 3` in the dev profile, or hashing 20 MiB several times takes minutes.
 
 **Parallel tests need their own directories.** `tests/cli.rs` names them with an atomic counter. The
 clock is not unique enough: two tests once shared a directory and deleted each other's config.
