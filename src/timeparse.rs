@@ -12,17 +12,9 @@ pub fn now() -> i64 {
 /// `30s`, `5m`, `2h` or `1d`, as seconds. Zero and anything unparseable is `None`.
 pub fn duration_secs(s: &str) -> Option<u64> {
     let s = s.trim();
-    let (digits, multiplier) = if let Some(n) = s.strip_suffix('s') {
-        (n, 1)
-    } else if let Some(n) = s.strip_suffix('m') {
-        (n, 60)
-    } else if let Some(n) = s.strip_suffix('h') {
-        (n, 3600)
-    } else if let Some(n) = s.strip_suffix('d') {
-        (n, 86400)
-    } else {
-        return None;
-    };
+    let (digits, multiplier) = [('s', 1), ('m', 60), ('h', 3600), ('d', 86400)]
+        .into_iter()
+        .find_map(|(unit, seconds)| s.strip_suffix(unit).map(|digits| (digits, seconds)))?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
