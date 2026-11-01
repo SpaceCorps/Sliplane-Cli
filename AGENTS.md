@@ -183,11 +183,41 @@ command, because the API wants autoscaling sent separately from `instanceType`/`
 ## Releasing
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on Linux, macOS and Windows for every
-push and pull request. Publishing a GitHub Release builds binaries for each platform and attaches
-them to it:
+push and pull request, plus the installer tests (below). Publishing a GitHub Release builds binaries
+for each platform and attaches them to it:
 
 ```bash
 gh release create v0.3.0 --title v0.3.0 --notes "..."
 ```
 
-Bump `version` in `Cargo.toml` to match the tag first. `sliplane --version` reports it.
+Bump `version` in `Cargo.toml` to match the tag first. `sliplane --version` reports it, and the
+installers refuse a binary whose version differs from the tag, so a forgotten bump fails the release
+instead of shipping a mislabelled binary.
+
+**The release asset layout is a contract.** `scripts/install.sh`, `scripts/install.ps1` and any future
+`sliplane update` all depend on it, and so do links in the docs:
+
+- `sliplane-vX.Y.Z-<target>.tar.gz` (`.zip` for Windows), holding `sliplane-vX.Y.Z-<target>/sliplane[.exe]`,
+  for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`,
+  `aarch64-unknown-linux-musl` and `x86_64-pc-windows-msvc`
+- `checksums.txt` (`sha256sum` format) covering every archive and both installers
+- `install.sh` and `install.ps1`, copied from `scripts/`, so `releases/latest/download/install.sh`
+  always matches the latest release
+
+The `checksums` job writes the last two after the archives are up and attests them
+(`gh attestation verify <file> --repo SpaceCorps/Sliplane-Cli`); `verify-install` then installs the
+release from the public URLs on Linux, macOS and Windows. Releases up to 1.2.0 have no `checksums.txt`,
+so the installers cannot install them. Checksums come from the same place as the archives, so they
+catch corruption, not a compromised release; the attestation is what ties a file to this workflow.
+
+Installers are tested offline: `sh scripts/test-install.sh <binary>` and
+`pwsh scripts/test-install.ps1 <binary>` build a fake release around a binary and run the real
+installer against it (CI does this on every push). Both installers honour `SLIPLANE_RELEASES_URL`
+for that. Keep `scripts/*.sh` shellcheck-clean, and keep `.gitattributes` forcing LF on them, since a
+CRLF `install.sh` fails on `#!/bin/sh\r`.
+
+Both CLIs are called `sliplane`, so the official Sliplane CLI and this one can fight over a PATH
+slot. This one installs to `~/.sliplane-cli/bin` and uses a `sliplane-cli` config dir (theirs is
+`sliplane`), and the installers warn when another `sliplane` comes first on PATH. The keystore service
+name is `sliplane-cli` in both, but entries are `account:<name>` here and `credential_<hex>` there,
+so they never collide; keep our `account:` prefix.
