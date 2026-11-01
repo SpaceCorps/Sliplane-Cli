@@ -10,6 +10,7 @@ mod error;
 mod image;
 mod output;
 mod patharg;
+mod pgwire;
 mod presets;
 mod readme;
 mod release;

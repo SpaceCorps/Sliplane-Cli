@@ -848,6 +848,33 @@ pub enum Postgres {
     /// See and change which source IPs may connect (read-modify-write on the IP allow list)
     #[command(subcommand)]
     Allowlist(Allowlist),
+    /// Run SQL on the database and get the rows back as data (read-only unless --write)
+    Query {
+        #[command(flatten)]
+        p: PgId,
+        /// The SQL to run: one or more statements, run as one transaction. '-' reads it from stdin
+        #[arg(long, value_name = "SQL", allow_hyphen_values = true, conflicts_with = "file")]
+        sql: Option<String>,
+        /// Read the SQL from this file ('-' is stdin) instead of --sql
+        #[arg(long, value_name = "PATH")]
+        file: Option<String>,
+        /// Allow statements that change data or schema; without it the session is read-only
+        #[arg(long)]
+        write: bool,
+        /// Keep at most this many rows per statement (the rest are counted, and `truncated` is set)
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = 1000,
+            value_parser = clap::value_parser!(u32).range(1..=100_000)
+        )]
+        max_rows: u32,
+        /// Longest a statement may run (30s, 5m, 1h; at most 1d); the database aborts it after this
+        #[arg(long, value_name = "DURATION", default_value = "30s")]
+        timeout: String,
+    },
+    /// Open psql on the database, with the credentials in its environment (needs psql 16 or newer)
+    Connect(PgId),
 }
 
 /// `--my-ip` and the IP family to detect it in.
@@ -1184,6 +1211,7 @@ impl Postgres {
             | Postgres::Logs { p, .. }
             | Postgres::Metrics { p, .. }
             | Postgres::Restore { p, .. } => Some(p),
+            Postgres::Query { p, .. } | Postgres::Connect(p) => Some(p),
             Postgres::Allowlist(Allowlist::Clear(p)) => Some(p),
             Postgres::Allowlist(Allowlist::Show { p, .. } | Allowlist::Add { p, .. } | Allowlist::Remove { p, .. }) => {
                 Some(p)
