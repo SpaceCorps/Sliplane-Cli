@@ -21,12 +21,12 @@ Windows (PowerShell):
 irm https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.ps1 | iex
 ```
 
-Open a new terminal and check it worked with `sliplane --version`. No admin rights needed: the installer downloads the binary for your platform, verifies its SHA-256 checksum, and puts it in `~/.sliplane-cli/bin` (Windows: `%LOCALAPPDATA%\sliplane-cli\bin`). To update, run the same command again.
+Open a new terminal and check it worked with `sliplane --version`. No admin rights needed: the installer downloads the binary for your platform, verifies its SHA-256 checksum, and puts it in `~/.sliplane-cli/bin` (Windows: `%LOCALAPPDATA%\sliplane-cli\bin`). To update, run `sliplane update` (`sliplane update --check` only tells you whether there is a newer release), or run the installer again.
 
 <details>
 <summary>Other ways to install, pin a version, or uninstall</summary>
 
-**A specific version.** Pass it to the installer.
+**A specific version.** Pass it to the installer, or from a working install run `sliplane update --version v1.3.0` (it can also go back to an older release; plain `sliplane update` never does). Releases up to 1.2.0 have no `checksums.txt`, so neither will install them.
 
 ```sh
 curl -fsSL https://github.com/SpaceCorps/Sliplane-Cli/releases/latest/download/install.sh | sh -s -- 1.3.0
@@ -105,6 +105,7 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 | `sliplane login [name]` | Interactively authenticate with your API token and save it to the OS keystore |
 | `sliplane me` | Query identity, organization and the token's scopes (e.g. `services:write`, `secrets:read`) |
 | `sliplane version` | CLI version and the API spec it targets |
+| `sliplane update [--check] [--version vX.Y.Z]` | Update this executable to the latest release (or the named one) after verifying its SHA-256 checksum. `--check` only reports. Needs no account; never runs by itself |
 | `sliplane completion <shell>` | Shell completion script for bash, zsh, fish, powershell or elvish |
 | `sliplane accounts list [--check]` | List configured accounts (pass `--check` to verify token validity) |
 | `sliplane accounts test <name>` | Test credentials for a specific account |
