@@ -11,18 +11,38 @@ use crate::cli::{Deploy, ServiceRef, Services, WaitFlags};
 use crate::client::{Client, query, seg};
 use crate::commands::{client, done, logs, metrics_query, print, wait};
 use crate::error::{Error, ErrorCode, Result};
+use crate::resolve::{self, Kind};
 use crate::{account, obj, patharg, timeparse};
 
 fn timeout(w: &WaitFlags) -> Duration {
     Duration::from_secs(w.timeout.unwrap_or(wait::DEFAULT_TIMEOUT_SECS))
 }
 
-pub fn run(c: Services) -> Result<()> {
+pub fn run(mut c: Services) -> Result<()> {
+    // Names become ids here, once. A command given ids makes no extra request.
+    if let Some(s) = c.service_mut() {
+        s.check()?;
+    }
+    if let Some(s) = c.service_mut()
+        && s.needs_lookup()
+    {
+        s.resolve(&client(&s.a)?)?;
+    }
     match c {
-        Services::List { project_id, a } => list(&client(&a)?, project_id.as_deref()),
-        Services::Get(s) => print(client(&s.a)?.get(&path(&s, ""))?),
-        Services::Create { project_id, name, server_id, d, public, protocol, env, secret_env, volumes, w, a } => {
+        Services::List { project_id, project, a } => {
             let client = client(&a)?;
+            let mut id = project_id.unwrap_or_default();
+            if project.is_some() {
+                resolve::one(&client, Kind::Project, &mut id, &project)?;
+            }
+            list(&client, Some(id).filter(|i| !i.is_empty()).as_deref())
+        }
+        Services::Get(s) => print(client(&s.a)?.get(&path(&s, ""))?),
+        Services::Create { p, name, srv, d, public, protocol, env, secret_env, volumes, w, a } => {
+            let client = client(&a)?;
+            let (mut project_id, mut server_id) = (p.project_id, srv.server_id);
+            resolve::one(&client, Kind::Project, &mut project_id, &p.project)?;
+            resolve::one(&client, Kind::Server, &mut server_id, &srv.server)?;
             let body = create_body(&client, name, &server_id, &d, public, protocol, &env, &secret_env, &volumes)?;
             let mut service = client.post(&format!("projects/{}/services", seg(&project_id)), &body)?;
             if w.wait {

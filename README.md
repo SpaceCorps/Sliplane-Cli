@@ -96,6 +96,8 @@ Output is YAML. Add `--json` to any command for JSON. Errors go to stderr as a J
 
 Every command that accesses the API accepts `--account <name>` (short `-a <name>`).
 
+Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postgres-id` or `--bucket-id`, it also takes the resource's name: `--project`, `--service`, `--server`, `--postgres`, `--bucket` (each accepts a name or an id). `sliplane services logs --service web --since 10m -a work` works without looking anything up first. A name shared by two things is refused with their ids, never guessed.
+
 ### Identity & Authentication
 
 | Command | Description |

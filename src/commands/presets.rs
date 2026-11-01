@@ -11,6 +11,7 @@ use crate::client::seg;
 use crate::commands::services::parse_env;
 use crate::commands::{client, print, wait};
 use crate::error::Result;
+use crate::resolve::{self, Kind};
 use crate::{obj, presets};
 
 pub fn run(c: Presets) -> Result<()> {
@@ -20,9 +21,12 @@ pub fn run(c: Presets) -> Result<()> {
             print(Value::Array(catalog.list(search.as_deref(), tag.as_deref())))
         }
         Presets::Show { id } => print(presets::fetch()?.describe(&id)?),
-        Presets::Deploy { id, project_id, server_id, name, env, secret_env, private, dry_run, w, a } => {
+        Presets::Deploy { id, p, srv, name, env, secret_env, private, dry_run, w, a } => {
             // The account is chosen before anything else happens, a dry run included.
             let client = client(&a)?;
+            let (mut project_id, mut server_id) = (p.project_id, srv.server_id);
+            resolve::one(&client, Kind::Project, &mut project_id, &p.project)?;
+            resolve::one(&client, Kind::Server, &mut server_id, &srv.server)?;
             let overrides = parse_env(&env, &secret_env)?;
             let instance = presets::fetch()?.instantiate(&id)?;
             let (body, warnings) =
