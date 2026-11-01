@@ -9,7 +9,8 @@ entries, so existing accounts keep working.
 
 For the manual the *agent* reads, run `sliplane agent-readme` - that text lives in
 `src/readme.rs` and is the tool's actual interface for its main audience. This file is for the
-human editing the source.
+human editing the source. `PARITY.md` records how this CLI compares with the official Sliplane CLI:
+what was ported, what was declined and why, and how the rest would be built.
 
 ## Commands
 
@@ -33,6 +34,7 @@ export SLIPLANE_CONFIG_DIR=$(mktemp -d) SLIPLANE_SECRET_STORE=plaintext
 | `SLIPLANE_SECRET_STORE` | Forces a backend: `dpapi`, `keychain`, `libsecret`, `plaintext` |
 | `SLIPLANE_ALLOW_PLAINTEXT_STORE=1` | Permits the plaintext fallback where no keystore exists |
 | `SLIPLANE_API_URL` | Overrides the API base URL - how `tests/cli.rs` points at its mock |
+| `SLIPLANE_PRESETS_URL` | Overrides the preset catalog URL, the same way |
 
 There is deliberately **no** `SLIPLANE_API_KEY`. See the invariants below.
 
@@ -46,6 +48,11 @@ src/
     mod.rs         dispatch, and every command that is one request and a print
     accounts.rs    accounts add|list|test|remove
     services.rs    services *, including the create/update logic
+    presets.rs     presets list|show|deploy
+    logs.rs        services logs --follow: the poll loop and its dedupe
+    wait.rs        --wait: poll events until a deploy has an outcome
+  presets.rs       the preset catalog: fetch, validate, generate secrets, turn a preset into a request
+  timeparse.rs     durations (30m) and RFC 3339, without a date-time crate
   client.rs        blocking HTTP (ureq + rustls), status -> ErrorCode, API error hints
   error.rs         ErrorCode (= exit code) and Error {message, detail, remediation}
   output.rs        YAML by default, JSON with --json, the error envelope, the obj! macro
@@ -144,6 +151,21 @@ scripted call fails with a remediation instead of hanging.
 **`accounts remove` does not revoke anything.** It deletes the local copy of the key. The key keeps
 working anywhere else it was pasted until it is revoked in the Sliplane dashboard, and the command
 says so in its output. Do not reword that into something that sounds like revocation.
+
+**The preset catalog is not the Sliplane API.** `presets.rs` fetches `sliplane.io/api/presets` with its
+own bare HTTP agent, so the API key can never reach it, and `presets list|show` take no `--account`.
+It has no version field, so `parse` rejects anything it does not recognise instead of guessing: the
+catalog decides which image runs with which secrets. `SLIPLANE_PRESETS_URL` points it at a mock, the way
+`SLIPLANE_API_URL` does for the API. A preset's generated passwords are write-only once deployed, so
+`presets deploy` prints them, and does so even when `--wait` fails afterwards.
+
+**`--wait` reads events, not `status`.** Right after a redeploy is accepted, `status` still shows the
+previous deploy's value. `wait::known_events` has to be read *before* the deploy is triggered, or the
+deploy's own events are mistaken for old ones. The poll interval is a constant, so a test that needs a
+second poll takes three seconds.
+
+**Never follow logs without a bound in a test or an agent flow.** `--follow` with no `--for` runs until
+interrupted. The tests use `--for 1s`.
 
 **Parallel tests need their own directories.** `tests/cli.rs` names them with an atomic counter. The
 clock is not unique enough: two tests once shared a directory and deleted each other's config.
