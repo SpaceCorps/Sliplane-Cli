@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 use ureq::Agent;
-use ureq::http::Response;
+use ureq::config::IpFamily;
+use ureq::http::{HeaderMap, Response};
 
 use crate::error::{Error, ErrorCode, Result};
 
@@ -23,6 +24,13 @@ pub struct Client {
     org_id: Option<String>,
 }
 
+/// The IP family a [`Client::direct`] connection is limited to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family {
+    V4,
+    V6,
+}
+
 enum Method {
     Get,
     Post,
@@ -33,14 +41,6 @@ enum Method {
 
 impl Client {
     pub fn new(api_key: &str, org_id: Option<&str>) -> Client {
-        let agent: Agent = Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(100)))
-            .timeout_connect(Some(Duration::from_secs(15)))
-            .http_status_as_error(false)
-            .user_agent(concat!("sliplane-cli/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .into();
-
         // For pointing the CLI at a mock server in tests. It changes where requests go, never
         // which key they carry - the key still comes only from a named account.
         let mut base = std::env::var("SLIPLANE_API_URL")
@@ -52,7 +52,7 @@ impl Client {
         }
 
         Client {
-            agent,
+            agent: agent(None),
             base,
             auth: format!("Bearer {api_key}"),
             org_id: org_id.filter(|s| !s.is_empty()).map(str::to_string),
@@ -61,6 +61,18 @@ impl Client {
 
     pub fn get(&self, path: &str) -> Result<Value> {
         self.send(Method::Get, path, None)
+    }
+
+    /// GET, keeping the response headers too (`Sliplane-Client-IP` on `me` is the one so far).
+    pub fn get_with_headers(&self, path: &str) -> Result<(Value, HeaderMap)> {
+        self.send_with_headers(Method::Get, path, None)
+    }
+
+    /// The same account and API, over one IP family and never through a proxy. What the API reports
+    /// about the connection (the caller's address) is then the address a direct connection to a
+    /// database would come from: not a proxy's, and not the other family's.
+    pub fn direct(&self, family: Family) -> Client {
+        Client { agent: agent(Some(family)), ..self.clone() }
     }
 
     /// POST with no body at all - the pause/unpause style endpoints.
@@ -91,6 +103,10 @@ impl Client {
     }
 
     fn send(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
+        self.send_with_headers(method, path, body).map(|(value, _)| value)
+    }
+
+    fn send_with_headers(&self, method: Method, path: &str, body: Option<&Value>) -> Result<(Value, HeaderMap)> {
         let url = format!("{}{}", self.base, path);
 
         macro_rules! headers {
@@ -130,8 +146,27 @@ impl Client {
     }
 }
 
-fn read(mut response: Response<ureq::Body>) -> Result<Value> {
+/// One blocking agent. `direct` limits it to one IP family and ignores the proxy environment.
+fn agent(direct: Option<Family>) -> Agent {
+    let mut builder = Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(100)))
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .http_status_as_error(false)
+        .user_agent(concat!("sliplane-cli/", env!("CARGO_PKG_VERSION")));
+    if let Some(family) = direct {
+        builder = builder
+            .ip_family(match family {
+                Family::V4 => IpFamily::Ipv4Only,
+                Family::V6 => IpFamily::Ipv6Only,
+            })
+            .proxy(None);
+    }
+    builder.build().into()
+}
+
+fn read(mut response: Response<ureq::Body>) -> Result<(Value, HeaderMap)> {
     let status = response.status().as_u16();
+    let headers = response.headers().clone();
     let bytes = response.body_mut().with_config().limit(MAX_BODY).read_to_vec().map_err(transport_error)?;
 
     if !(200..300).contains(&status) {
@@ -140,14 +175,15 @@ fn read(mut response: Response<ureq::Body>) -> Result<Value> {
     }
 
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(Value::Object(Default::default()));
+        return Ok((Value::Object(Default::default()), headers));
     }
 
-    serde_json::from_slice(&bytes).or_else(|_| {
+    let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
         // A non-JSON success body (plain-text logs, say) is still an answer; hand it back as
         // a string rather than failing a request the server said succeeded.
-        Ok(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
-    })
+        Value::String(String::from_utf8_lossy(&bytes).into_owned())
+    });
+    Ok((value, headers))
 }
 
 fn transport_error(e: ureq::Error) -> Error {

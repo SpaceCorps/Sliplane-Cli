@@ -4,6 +4,7 @@
 mod accounts;
 mod login;
 mod logs;
+mod postgres;
 mod presets;
 mod services;
 mod wait;
@@ -270,20 +271,15 @@ fn postgres(mut c: Postgres) -> Result<()> {
             done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "restart" })
         }
         Postgres::RotateCredentials(p) => print(client(&p.a)?.post_empty(&at(&p, "/credentials/rotate"))?),
-        Postgres::Logs { p, since, until, limit } => {
-            let q = query(&[("since", since), ("until", until), ("limit", limit.map(|l| l.to_string()))]);
-            print(client(&p.a)?.get(&at(&p, &format!("/logs{q}")))?)
-        }
+        Postgres::Logs { p, since, until, limit } => postgres::logs(&p, since, until, limit),
         Postgres::Connections(p) => print(client(&p.a)?.get(&at(&p, "/active-connections"))?),
         Postgres::Metrics { p, r } => print(client(&p.a)?.get(&at(&p, &format!("/metrics{}", metrics_query(&r))))?),
         Postgres::RelationSizes(p) => print(client(&p.a)?.get(&at(&p, "/relation-sizes"))?),
         Postgres::SlowQueries(p) => print(client(&p.a)?.get(&at(&p, "/slow-queries"))?),
         Postgres::TopQueries(p) => print(client(&p.a)?.get(&at(&p, "/top-queries"))?),
         Postgres::RestoreWindow(p) => print(client(&p.a)?.get(&at(&p, "/restore"))?),
-        Postgres::Restore { p, timestamp } => {
-            let r = client(&p.a)?.post(&at(&p, "/restore"), &json!({ "timestamp": timestamp }))?;
-            done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "restore", "timestamp" => timestamp })
-        }
+        Postgres::Restore { p, timestamp } => postgres::restore(&p, timestamp),
+        Postgres::Allowlist(c) => postgres::allowlist(c),
     }
 }
 
