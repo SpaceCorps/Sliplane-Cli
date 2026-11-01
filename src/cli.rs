@@ -81,6 +81,25 @@ pub enum Command {
     SshKeys(SshKeys),
     /// List standard prices for servers, Postgres and object storage
     Pricing(Account),
+    /// Point a project's coding agent at this CLI's manual
+    #[command(subcommand)]
+    Agent(Agent),
+}
+
+// ---------------------------------------------------------------------------------------------
+// agent
+
+#[derive(Subcommand)]
+pub enum Agent {
+    /// Add a short Sliplane section to AGENTS.md (replaced in place on a re-run). Needs no account or network
+    Init {
+        /// Markdown file to write, inside the current directory (use CLAUDE.md for Claude Code)
+        #[arg(long, value_name = "PATH", default_value = "AGENTS.md")]
+        file: String,
+        /// Print the section and write nothing
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -356,10 +375,21 @@ pub struct WaitFlags {
     pub timeout: Option<u64>,
 }
 
+/// Environment variables read from dotenv files, for the commands that take `--env`.
+#[derive(Args, Default)]
+pub struct EnvFiles {
+    /// Read plain environment variables from a dotenv file: KEY=VALUE lines, # comments, quotes, no interpolation (repeatable). A bare KEY is an error. Flags win over files
+    #[arg(long, value_name = "PATH")]
+    pub env_file: Vec<String>,
+    /// Same as --env-file, but every variable in the file is secret (repeatable). Keeps values out of argv
+    #[arg(long, value_name = "PATH")]
+    pub secret_env_file: Vec<String>,
+}
+
 /// Flags shared by `services create` and `services update`.
 #[derive(Args)]
 pub struct Deploy {
-    /// Container image URL (e.g. docker.io/library/nginx:latest)
+    /// Container image, e.g. ghcr.io/org/app:1.2. Docker Hub shorthand is expanded: nginx -> docker.io/library/nginx:latest, user/app -> docker.io/user/app:latest. A reference with a registry host is sent as written
     #[arg(long, value_name = "URL")]
     pub image: Option<String>,
     /// Repository URL (e.g. https://github.com/user/repo)
@@ -432,6 +462,8 @@ pub enum Services {
         /// Secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Volume mount as id:/path or name:/path (repeatable). A name resolves to the existing volume of that name
         #[arg(long = "volume", value_name = "VOLUME")]
         volumes: Vec<String>,
@@ -455,6 +487,8 @@ pub enum Services {
         /// Secret environment variable (repeatable). Shares one list with --env
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Allow --env/--secret-env to drop variables not listed. Without it, an update that would delete a variable is refused
         #[arg(long, conflicts_with = "merge_env")]
         replace_env: bool,
@@ -603,6 +637,7 @@ pub enum Services {
 // presets
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
 pub enum Presets {
     /// List the presets. Needs no account: the catalog is public
     List {
@@ -635,6 +670,8 @@ pub enum Presets {
         /// Set or override a secret environment variable (repeatable)
         #[arg(long, value_name = "KEY=VALUE")]
         secret_env: Vec<String>,
+        #[command(flatten)]
+        ef: EnvFiles,
         /// Do not expose the service publicly, even if the preset does (databases are public TCP by default)
         #[arg(long)]
         private: bool,
@@ -954,9 +991,12 @@ pub enum Credentials {
         /// Registry username
         #[arg(long)]
         username: String,
-        /// Registry authentication token
+        /// Registry authentication token. Visible in the process list and shell history: prefer --token-stdin
+        #[arg(long, value_name = "TOKEN", conflicts_with = "token_stdin")]
+        token: Option<String>,
+        /// Read the registry token from stdin (keeps it out of argv), e.g. `printf %s "$TOKEN" | sliplane credentials create ... --token-stdin`
         #[arg(long)]
-        token: String,
+        token_stdin: bool,
         #[command(flatten)]
         a: Account,
     },
