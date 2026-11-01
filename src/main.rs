@@ -15,7 +15,9 @@ mod readme;
 mod release;
 mod replace;
 mod resolve;
+mod s3;
 mod secrets;
+mod sigv4;
 mod timeparse;
 
 use std::process::ExitCode;

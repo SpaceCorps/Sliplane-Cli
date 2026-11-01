@@ -2999,3 +2999,947 @@ fn agent_init_keeps_crlf_files_crlf() {
     assert!(!text.replace("\r\n", "").contains('\n'), "mixed line endings: {text:?}");
     assert_eq!(status_of(&env.run_in(&dir, &["agent", "init", "--json"]))["status"], "unchanged");
 }
+
+// ---------------------------------------------------------------------------------------------
+// s3: files in a bucket, over the S3 protocol
+//
+// Two servers are involved. `Mock` plays the Sliplane API (bucket list, key create/delete) and
+// `MockS3` plays the bucket's endpoint. The mock S3 checks every request's Signature V4 itself,
+// with code written separately from the CLI's, and its payload hash against the body it received,
+// so a request that real S3 would refuse is refused here too.
+//
+// The same scenario also runs against a real S3-compatible server when one is named:
+//   SLIPLANE_TEST_S3_ENDPOINT=http://127.0.0.1:19000 SLIPLANE_TEST_S3_BUCKET=testbucket \
+//   SLIPLANE_TEST_S3_ACCESS_KEY=minioadmin SLIPLANE_TEST_S3_SECRET_KEY=minioadmin cargo test s3_
+
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+
+const S3_ACCESS: &str = "AKIAMOCKEXAMPLE";
+const S3_SECRET: &str = "mockSecretKey/ForTests+Only0123456789";
+
+#[derive(Clone, Debug)]
+struct S3Seen {
+    method: String,
+    target: String,
+    headers: Vec<(String, String)>,
+}
+
+struct S3Opts {
+    bucket: &'static str,
+    /// The first this-many requests are refused as if the key were not active yet.
+    reject_first: usize,
+    /// Answer every request with a redirect to this URL instead.
+    redirect: Option<String>,
+}
+
+impl Default for S3Opts {
+    fn default() -> S3Opts {
+        S3Opts { bucket: "files", reject_first: 0, redirect: None }
+    }
+}
+
+struct MockS3 {
+    url: String,
+    seen: Arc<Mutex<Vec<S3Seen>>>,
+}
+
+impl MockS3 {
+    fn requests(&self) -> Vec<S3Seen> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn header_of<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
+/// What a server does with a Signature V4 request: rebuild the canonical request from what arrived
+/// on the wire and compare signatures. Nothing is shared with the CLI's signer.
+fn signature_ok(method: &str, path: &str, query: &str, headers: &[(String, String)], secret: &str) -> bool {
+    let Some(auth) = header_of(headers, "authorization") else { return false };
+    let field = |name: &str| auth.split(name).nth(1).map(|r| r.split([',', ' ']).next().unwrap_or("")).unwrap_or("");
+    let credential = field("Credential=");
+    let signed = field("SignedHeaders=");
+    let given = field("Signature=");
+    let scope: Vec<&str> = credential.split('/').collect();
+    if scope.len() != 5 || scope[2] != "us-east-1" || scope[3] != "s3" || scope[4] != "aws4_request" {
+        return false;
+    }
+    let mut pairs: Vec<&str> = if query.is_empty() { Vec::new() } else { query.split('&').collect() };
+    pairs.sort();
+    let canonical_headers: String =
+        signed.split(';').map(|h| format!("{h}:{}\n", header_of(headers, h).unwrap_or("").trim())).collect();
+    let payload = header_of(headers, "x-amz-content-sha256").unwrap_or("");
+    let canonical = format!("{method}\n{path}\n{}\n{canonical_headers}\n{signed}\n{payload}", pairs.join("&"));
+    let amz_date = header_of(headers, "x-amz-date").unwrap_or("");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{}/{}/s3/aws4_request\n{}",
+        scope[1],
+        scope[2],
+        hex_of(&Sha256::digest(canonical.as_bytes()))
+    );
+    let mut key = hmac_sha256(format!("AWS4{secret}").as_bytes(), scope[1].as_bytes());
+    for part in [scope[2], "s3", "aws4_request"] {
+        key = hmac_sha256(&key, part.as_bytes());
+    }
+    hex_of(&hmac_sha256(&key, string_to_sign.as_bytes())) == given
+}
+
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
+/// How AWS writes a key when asked for `encoding-type=url`: spaces as `+`, `/` kept.
+fn list_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn s3_error(status: u16, code: &str, message: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>{code}</Code><Message>{message}</Message><RequestId>REQ1</RequestId></Error>"
+    );
+    (status, vec![("Content-Type".into(), "application/xml".into())], body.into_bytes())
+}
+
+/// ListObjectsV2 over an in-memory bucket, the way S3 does it: entries (keys and folded prefixes)
+/// in order, a page of at most `max-keys`, and the last entry returned as the continuation token.
+fn list_response(objects: &BTreeMap<String, Vec<u8>>, query: &str, bucket: &str) -> Vec<u8> {
+    let q: BTreeMap<String, String> =
+        query.split('&').filter_map(|p| p.split_once('=')).map(|(k, v)| (pct_decode(k), pct_decode(v))).collect();
+    let prefix = q.get("prefix").cloned().unwrap_or_default();
+    let delimiter = q.get("delimiter").cloned().unwrap_or_default();
+    let max: usize = q.get("max-keys").and_then(|m| m.parse().ok()).unwrap_or(1000);
+    let after = q.get("continuation-token").cloned();
+    let url = q.get("encoding-type").is_some_and(|e| e == "url");
+    let enc = |s: &str| if url { list_encode(s) } else { s.to_string() };
+
+    // (name, is_folder), in S3's order.
+    let mut entries: Vec<(String, bool)> = Vec::new();
+    for key in objects.keys().filter(|k| k.starts_with(&prefix)) {
+        let rest = &key[prefix.len()..];
+        match (!delimiter.is_empty()).then(|| rest.find(&delimiter)).flatten() {
+            Some(i) => {
+                let folder = format!("{prefix}{}", &rest[..i + delimiter.len()]);
+                if entries.last().map(|(n, f)| (n.as_str(), *f)) != Some((folder.as_str(), true)) {
+                    entries.push((folder, true));
+                }
+            }
+            None => entries.push((key.clone(), false)),
+        }
+    }
+    if let Some(after) = &after {
+        entries.retain(|(n, _)| n > after);
+    }
+    let truncated = entries.len() > max;
+    entries.truncate(max);
+
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>{bucket}</Name><Prefix>{}</Prefix><KeyCount>{}</KeyCount><MaxKeys>{max}</MaxKeys>",
+        xml_escape(&enc(&prefix)),
+        entries.len()
+    );
+    if url {
+        xml.push_str("<EncodingType>url</EncodingType>");
+    }
+    xml.push_str(&format!("<IsTruncated>{truncated}</IsTruncated>"));
+    if truncated {
+        xml.push_str(&format!(
+            "<NextContinuationToken>{}</NextContinuationToken>",
+            xml_escape(&entries.last().unwrap().0)
+        ));
+    }
+    for (name, folder) in &entries {
+        if *folder {
+            xml.push_str(&format!("<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>", xml_escape(&enc(name))));
+        } else {
+            let body = &objects[name];
+            xml.push_str(&format!(
+                "<Contents><Key>{}</Key><LastModified>2026-10-31T12:00:00.000Z</LastModified><ETag>&quot;{}&quot;</ETag><Size>{}</Size><StorageClass>STANDARD</StorageClass></Contents>",
+                xml_escape(&enc(name)),
+                &hex_of(&Sha256::digest(body))[..32],
+                body.len()
+            ));
+        }
+    }
+    xml.push_str("</ListBucketResult>");
+    xml.into_bytes()
+}
+
+fn start_s3(opts: S3Opts) -> MockS3 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let objects = Arc::new(Mutex::new(BTreeMap::<String, Vec<u8>>::new()));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let opts = Arc::new(opts);
+    let log = seen.clone();
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let (log, objects, counter, opts) = (log.clone(), objects.clone(), counter.clone(), opts.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let target = parts.next().unwrap_or("").to_string();
+                let mut headers = Vec::new();
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let h = h.trim_end();
+                    if h.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        headers.push((k.trim().to_lowercase(), v.trim().to_string()));
+                    }
+                }
+                let len: usize = header_of(&headers, "content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let mut body = vec![0; len];
+                if reader.read_exact(&mut body).is_err() {
+                    return;
+                }
+                log.lock().unwrap().push(S3Seen {
+                    method: method.clone(),
+                    target: target.clone(),
+                    headers: headers.clone(),
+                });
+
+                let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                let (status, mut out_headers, out_body) = (|| {
+                    if let Some(to) = &opts.redirect {
+                        return (307, vec![("Location".to_string(), format!("{to}{target}"))], Vec::new());
+                    }
+                    let credential = header_of(&headers, "authorization").unwrap_or("");
+                    if !credential.contains(&format!("Credential={S3_ACCESS}/")) {
+                        return s3_error(
+                            403,
+                            "InvalidAccessKeyId",
+                            "The Access Key Id you provided does not exist in our records.",
+                        );
+                    }
+                    if counter.fetch_add(1, Ordering::SeqCst) < opts.reject_first {
+                        return s3_error(403, "InvalidAccessKeyId", "The key is not active yet.");
+                    }
+                    if !signature_ok(&method, path, query, &headers, S3_SECRET) {
+                        return s3_error(
+                            403,
+                            "SignatureDoesNotMatch",
+                            "The request signature we calculated does not match.",
+                        );
+                    }
+                    // The payload hash that was signed has to be the hash of the body that came.
+                    let claimed = header_of(&headers, "x-amz-content-sha256").unwrap_or("");
+                    if claimed != "UNSIGNED-PAYLOAD" && claimed != hex_of(&Sha256::digest(&body)) {
+                        return s3_error(
+                            400,
+                            "XAmzContentSHA256Mismatch",
+                            "The provided x-amz-content-sha256 header does not match what was computed.",
+                        );
+                    }
+                    let Some(rest) = path.strip_prefix('/').and_then(|p| p.strip_prefix(opts.bucket)) else {
+                        return s3_error(404, "NoSuchBucket", "The specified bucket does not exist");
+                    };
+                    let key = pct_decode(rest.strip_prefix('/').unwrap_or(""));
+                    let mut store = objects.lock().unwrap();
+                    match (method.as_str(), key.is_empty()) {
+                        ("GET", true) => (
+                            200,
+                            vec![("Content-Type".into(), "application/xml".into())],
+                            list_response(&store, query, opts.bucket),
+                        ),
+                        ("PUT", false) => {
+                            let etag = format!("\"{}\"", &hex_of(&Sha256::digest(&body))[..32]);
+                            store.insert(key, body.clone());
+                            (200, vec![("ETag".into(), etag)], Vec::new())
+                        }
+                        ("GET" | "HEAD", false) => match store.get(&key) {
+                            Some(b) => (
+                                200,
+                                vec![("Content-Length".into(), b.len().to_string())],
+                                if method == "GET" { b.clone() } else { Vec::new() },
+                            ),
+                            None if method == "HEAD" => (404, Vec::new(), Vec::new()),
+                            None => s3_error(404, "NoSuchKey", "The specified key does not exist."),
+                        },
+                        ("DELETE", false) => {
+                            store.remove(&key);
+                            (204, Vec::new(), Vec::new())
+                        }
+                        _ => s3_error(400, "InvalidRequest", "not something this mock does"),
+                    }
+                })();
+
+                // A HEAD answers with the length of the object it did not send.
+                let declared =
+                    out_headers.iter().position(|(k, _)| k == "Content-Length").map(|i| out_headers.remove(i).1);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nConnection: close\r\nContent-Length: {}\r\n",
+                    declared.unwrap_or(out_body.len().to_string())
+                );
+                for (k, v) in &out_headers {
+                    let _ = write!(stream, "{k}: {v}\r\n");
+                }
+                let _ = write!(stream, "\r\n");
+                let _ = stream.write_all(&out_body);
+            });
+        }
+    });
+    MockS3 { url, seen }
+}
+
+/// A Sliplane API that knows one bucket, `sb_1`, and hands out S3 keys for it.
+fn api_for(endpoint: &str, bucket: &str, access: &str, secret: &str, status: &str) -> Mock {
+    Mock::start(vec![
+        me(),
+        (
+            "GET",
+            "buckets",
+            200,
+            json!([
+                {"id": "sb_other", "name": "elsewhere", "endpoint": "https://other.example", "status": "active"},
+                {"id": "sb_1", "name": bucket, "region": "ger", "endpoint": endpoint, "status": status}
+            ]),
+        ),
+        (
+            "POST",
+            "buckets/sb_1/keys",
+            201,
+            json!({"id": "sk_1", "name": "sliplane-cli (work)", "accessKeyId": access, "secretAccessKey": secret, "createdAt": "2026-10-31T12:00:00Z"}),
+        ),
+        ("DELETE", "buckets/sb_1/keys/sk_1", 204, json!({})),
+    ])
+}
+
+fn run_with(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sliplane"))
+        .args(args)
+        .env("SLIPLANE_CONFIG_DIR", &env.dir)
+        .env("SLIPLANE_SECRET_STORE", "plaintext")
+        .env("SLIPLANE_API_URL", &env.api)
+        .envs(extra.iter().copied())
+        .output()
+        .unwrap()
+}
+
+fn json_with(env: &Env, args: &[&str], extra: &[(&str, &str)]) -> (i32, Value, Value) {
+    let mut all = args.to_vec();
+    all.push("--json");
+    let out = run_with(env, &all, extra);
+    let parse = |b: &[u8]| {
+        let s = String::from_utf8_lossy(b);
+        let s =
+            s.lines().filter(|l| !l.starts_with("warning:") && !l.starts_with("note:")).collect::<Vec<_>>().join("\n");
+        serde_json::from_str(&s).unwrap_or(Value::Null)
+    };
+    (out.status.code().unwrap(), parse(&out.stdout), parse(&out.stderr))
+}
+
+/// Deterministic bytes that do not compress, `len` of them.
+fn noise(len: usize) -> Vec<u8> {
+    let mut x = 0x9E3779B97F4A7C15u64;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+fn sha_hex(bytes: &[u8]) -> String {
+    hex_of(&Sha256::digest(bytes))
+}
+
+/// Where the scenario's S3 server is, and the key it accepts.
+struct S3Target {
+    endpoint: String,
+    bucket: String,
+    access: String,
+    secret: String,
+}
+
+fn keys_of(v: &Value) -> Vec<String> {
+    v["objects"].as_array().unwrap().iter().map(|o| o["key"].as_str().unwrap().to_string()).collect()
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect()
+}
+
+/// Everything a user does with a bucket, in order, against whichever server `t` names.
+fn files_scenario(t: &S3Target) {
+    let api = api_for(&t.endpoint, &t.bucket, &t.access, &t.secret, "active");
+    let env = Env::new(&api).with_account();
+    let run = |args: &[&str]| -> (i32, Value, Value) {
+        let mut all = vec!["s3"];
+        all.extend_from_slice(args);
+        all.extend_from_slice(&["-a", "work", "--bucket", &t.bucket]);
+        env.json(&all)
+    };
+    // Real servers keep what earlier runs left; everything here lives under a folder of its own.
+    let p = format!("sl-test-{}-{}", std::process::id(), env.dir.file_name().unwrap().to_string_lossy());
+
+    // 1. Without a key, nothing happens, and the way forward is spelled out.
+    let (code, _, err) = run(&["ls"]);
+    assert_eq!(code, 3, "{err}");
+    assert!(err["remediation"].as_str().unwrap().starts_with("sliplane s3 connect -a work --bucket-id sb_1"), "{err}");
+    assert!(api.requests().iter().all(|r| r.method != "POST"), "ls made a key");
+
+    // 2. connect makes one, keeps it, and prints nothing secret.
+    let (code, out, err) = run(&["connect"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "connected");
+    assert_eq!(out["reused"], false);
+    assert_eq!(out["bucket"], t.bucket.as_str());
+    assert_eq!(out["keyId"], "sk_1");
+    assert_eq!(out["accessKeyId"], t.access.as_str());
+    assert_eq!(out["secretStore"], "plaintext");
+    let raw = env.run(&["s3", "connect", "-a", "work", "--bucket", &t.bucket]);
+    let shown = format!("{}{}", String::from_utf8_lossy(&raw.stdout), String::from_utf8_lossy(&raw.stderr));
+    assert!(!shown.contains(&t.secret), "the secret was printed: {shown}");
+    let post = api.requests().into_iter().filter(|r| r.method == "POST").collect::<Vec<_>>();
+    assert_eq!(post.len(), 1, "the second connect made another key");
+    assert_eq!(post[0].path, "buckets/sb_1/keys");
+    assert_eq!(post[0].body.as_ref().unwrap()["name"], "sliplane-cli (work)");
+    // The pair is in the keystore (the plaintext one, here) and nowhere else.
+    let secrets_file = std::fs::read_to_string(env.dir.join("secrets.json")).unwrap();
+    assert!(secrets_file.contains("s3:work:sb_1") && secrets_file.contains(&t.secret));
+    let config = std::fs::read_to_string(env.dir.join("config.yaml")).unwrap();
+    assert!(!config.contains(&t.secret) && !config.contains(&t.access), "{config}");
+    let (_, again, _) = run(&["connect"]);
+    assert_eq!(again["reused"], true);
+
+    // 3. Uploads: a small file under an awkward key, a refusal to overwrite, and a big one.
+    let small = env.dir.join("small.txt");
+    std::fs::write(&small, b"hello, bucket\n").unwrap();
+    let small = small.to_str().unwrap();
+    let awkward = format!("{p}/docs/hello world+1.txt");
+    let (code, out, err) = run(&["upload", "--file", small, "--key", &awkward]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["size"].as_u64()), (Some("uploaded"), Some(14)));
+    assert_eq!(out["key"], awkward.as_str());
+    assert!(!out["etag"].as_str().unwrap().is_empty());
+    let (code, _, err) = run(&["upload", "--file", small, "--key", &awkward]);
+    assert_eq!(code, 6, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("already exists"));
+    assert!(err["remediation"].as_str().unwrap().contains("--force"));
+    assert_eq!(run(&["upload", "--file", small, "--key", &awkward, "--force"]).0, 0);
+
+    let unicode = format!("{p}/docs/caf\u{e9}/\u{fc}n\u{ef}.txt");
+    assert_eq!(run(&["upload", "--file", small, "--key", &unicode]).0, 0);
+    assert_eq!(run(&["upload", "--file", small, "--key", &format!("{p}/top.txt")]).0, 0);
+
+    let big_bytes = noise(20 * 1024 * 1024 + 3);
+    let big = env.dir.join("blob.bin");
+    std::fs::write(&big, &big_bytes).unwrap();
+    let big_key = format!("{p}/big/blob.bin");
+    let (code, out, err) = run(&["upload", "--file", big.to_str().unwrap(), "--key", &big_key]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["size"], big_bytes.len());
+    // With no --key the object is named after the file.
+    let named_file = env.dir.join(format!("{p}-named.txt"));
+    std::fs::write(
+        &named_file,
+        b"named
+",
+    )
+    .unwrap();
+    let named_key = format!("{p}-named.txt");
+    let (code, out, err) = run(&["upload", "--file", named_file.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["key"], named_key.as_str());
+
+    // 4. Listings: folded at '/', below a prefix, and all the way down.
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), [format!("{p}/top.txt")]);
+    assert_eq!(strings(&out["prefixes"]), [format!("{p}/big/"), format!("{p}/docs/")]);
+    assert_eq!(out["truncated"], false);
+    assert_eq!(out["bucket"], t.bucket.as_str());
+
+    let (_, out, _) = run(&["ls", "--prefix", &format!("{p}/docs/")]);
+    assert_eq!(keys_of(&out), std::slice::from_ref(&awkward));
+    assert_eq!(strings(&out["prefixes"]), [format!("{p}/docs/caf\u{e9}/")]);
+    let o = &out["objects"][0];
+    assert_eq!(o["size"], 14);
+    assert!(o["lastModified"].as_str().unwrap().starts_with("20"), "{o}");
+    assert!(!o["etag"].as_str().unwrap().is_empty() && !o["etag"].as_str().unwrap().contains('"'));
+
+    // A prefix with a space, a plus and non-ASCII is signed as it is sent in the query string.
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/docs/hello world+")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), std::slice::from_ref(&awkward));
+    let (code, out, err) = run(&["ls", "--prefix", &format!("{p}/docs/caf\u{e9}/")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(keys_of(&out), std::slice::from_ref(&unicode));
+
+    let (_, out, _) = run(&["ls", "--recursive", "--prefix", &format!("{p}/")]);
+    assert_eq!(out["count"], 4);
+    assert!(strings(&out["prefixes"]).is_empty());
+    let all = keys_of(&out);
+    assert!(all.contains(&unicode) && all.contains(&awkward) && all.contains(&big_key), "{all:?}");
+    assert_eq!(
+        out["objects"].as_array().unwrap().iter().find(|o| o["key"] == big_key.as_str()).unwrap()["size"],
+        big_bytes.len()
+    );
+
+    // ...and in pages. One entry at a time, every page is followed; with a limit, it stops and says how to go on.
+    let page = [("SLIPLANE_S3_PAGE_SIZE", "2")];
+    let prefix = format!("{p}/");
+    let (code, out, err) = json_with(
+        &env,
+        &["s3", "ls", "-a", "work", "--bucket", &t.bucket, "--recursive", "--limit", "0", "--prefix", &prefix],
+        &page,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["count"], 4);
+    assert_eq!(out["truncated"], false);
+    let (_, first, _) = json_with(
+        &env,
+        &["s3", "ls", "-a", "work", "--bucket", &t.bucket, "--recursive", "--limit", "3", "--prefix", &prefix],
+        &page,
+    );
+    assert_eq!((first["count"].as_u64(), first["truncated"].as_bool()), (Some(3), Some(true)));
+    let token = first["nextToken"].as_str().unwrap().to_string();
+    let (_, rest, _) = json_with(
+        &env,
+        &["s3", "ls", "-a", "work", "--bucket", &t.bucket, "--recursive", "--prefix", &prefix, "--token", &token],
+        &page,
+    );
+    assert_eq!(rest["truncated"], false);
+    let mut joined = keys_of(&first);
+    joined.extend(keys_of(&rest));
+    assert_eq!(joined, all, "pages did not add up to the listing");
+
+    // 5. Downloads, byte for byte.
+    let small_out = env.dir.join("got-small.txt");
+    let (code, out, err) = run(&["download", "--key", &awkward, "--out", small_out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["size"].as_u64()), (Some("downloaded"), Some(14)));
+    assert_eq!(std::fs::read(&small_out).unwrap(), b"hello, bucket\n");
+    let big_out = env.dir.join("got-blob.bin");
+    let (code, out, err) = run(&["download", "--key", &big_key, "--out", big_out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["size"], big_bytes.len());
+    let got = std::fs::read(&big_out).unwrap();
+    assert_eq!(sha_hex(&got), sha_hex(&big_bytes), "the download is not the upload");
+    // Nothing is left half-written beside it.
+    let leftovers: Vec<_> = std::fs::read_dir(&env.dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".part"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // Nothing at all is a file too.
+    let empty = env.dir.join("empty.txt");
+    std::fs::write(&empty, b"").unwrap();
+    let empty_key = format!("{p}/docs/empty.txt");
+    let (code, out, err) = run(&["upload", "--file", empty.to_str().unwrap(), "--key", &empty_key]);
+    assert_eq!((code, out["size"].as_u64()), (0, Some(0)), "{err}");
+    let empty_out = env.dir.join("got-empty.txt");
+    let (code, out, err) = run(&["download", "--key", &empty_key, "--out", empty_out.to_str().unwrap()]);
+    assert_eq!((code, out["size"].as_u64()), (0, Some(0)), "{err}");
+    assert_eq!(std::fs::read(&empty_out).unwrap(), b"");
+    assert_eq!(run(&["rm", "--key", &empty_key]).0, 0);
+
+    // An existing file is not replaced unless asked; an existing directory gets the key's file name.
+    let (code, _, err) = run(&["download", "--key", &awkward, "--out", small_out.to_str().unwrap()]);
+    assert_eq!(code, 6, "{err}");
+    assert_eq!(std::fs::read(&small_out).unwrap(), b"hello, bucket\n");
+    std::fs::write(&small_out, b"old").unwrap();
+    assert_eq!(run(&["download", "--key", &awkward, "--out", small_out.to_str().unwrap(), "--force"]).0, 0);
+    assert_eq!(std::fs::read(&small_out).unwrap(), b"hello, bucket\n");
+    let dir = env.dir.join("into");
+    std::fs::create_dir(&dir).unwrap();
+    assert_eq!(run(&["download", "--key", &unicode, "--out", dir.to_str().unwrap()]).0, 0);
+    assert!(dir.join("\u{fc}n\u{ef}.txt").is_file());
+
+    // To stdout the object is the output, and the receipt goes to stderr.
+    let raw =
+        env.run(&["s3", "download", "-a", "work", "--bucket", &t.bucket, "--key", &big_key, "--out", "-", "--json"]);
+    assert_eq!(raw.status.code(), Some(0));
+    assert_eq!(sha_hex(&raw.stdout), sha_hex(&big_bytes));
+    let stderr = String::from_utf8_lossy(&raw.stderr);
+    let text =
+        stderr.lines().filter(|l| !l.starts_with("warning:") && !l.starts_with("note:")).collect::<Vec<_>>().join(
+            "
+",
+        );
+    let receipt: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text:?}"));
+    assert_eq!(receipt["path"], "-");
+
+    // A key that is not there is not_found, whichever way it is asked for.
+    let (code, _, err) =
+        run(&["download", "--key", &format!("{p}/nope.txt"), "--out", env.dir.join("nope").to_str().unwrap()]);
+    assert_eq!((code, err["code"].as_str()), (4, Some("not_found")), "{err}");
+    assert!(
+        !env.dir.join("nope").exists()
+            && std::fs::read_dir(&env.dir).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".part"))
+    );
+
+    // 6. Deleting: all or nothing, and a typo is an error rather than a success.
+    let (code, _, err) = run(&["rm", "--key", &format!("{p}/top.txt"), "--key", &format!("{p}/typo.txt")]);
+    assert_eq!(code, 4, "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("typo.txt"));
+    assert_eq!(
+        keys_of(&run(&["ls", "--prefix", &format!("{p}/top")]).1),
+        [format!("{p}/top.txt")],
+        "something was deleted"
+    );
+    let (code, out, err) =
+        run(&["rm", "--key", &format!("{p}/top.txt"), "--key", &named_key, "--key", &format!("{p}/top.txt")]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["count"].as_u64()), (Some("deleted"), Some(2)));
+    for k in [&awkward, &unicode, &big_key] {
+        assert_eq!(run(&["rm", "--key", k]).0, 0);
+    }
+    assert_eq!(run(&["ls", "--recursive", "--prefix", &format!("{p}/")]).1["count"], 0);
+
+    // 7. Forgetting the key: locally only, and it says how to revoke it.
+    let (code, out, err) = run(&["disconnect"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!((out["status"].as_str(), out["keyId"].as_str()), (Some("disconnected"), Some("sk_1")));
+    assert!(out["note"].as_str().unwrap().contains("buckets delete-key -a work --bucket-id sb_1 --key-id sk_1"));
+    assert!(api.requests().iter().all(|r| r.method != "DELETE"), "disconnect revoked the key");
+    assert!(!std::fs::read_to_string(env.dir.join("secrets.json")).unwrap().contains(&t.secret));
+    assert_eq!(run(&["ls"]).0, 3);
+    assert_eq!(run(&["disconnect"]).1["status"], "not_connected");
+
+    // The API only ever saw the API key, and never an S3 header.
+    for r in api.requests() {
+        let auth = r.headers.iter().find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str());
+        assert_eq!(auth, Some("Bearer sl_test"), "{} {}", r.method, r.path);
+        assert!(r.headers.iter().all(|(_, v)| !v.contains(&t.access) && !v.contains(&t.secret)));
+    }
+}
+
+#[test]
+fn s3_files_against_the_mock() {
+    let s3 = start_s3(S3Opts::default());
+    files_scenario(&S3Target {
+        endpoint: s3.url.clone(),
+        bucket: "files".into(),
+        access: S3_ACCESS.into(),
+        secret: S3_SECRET.into(),
+    });
+
+    let seen = s3.requests();
+    assert!(seen.len() > 30, "{}", seen.len());
+    for r in &seen {
+        // Path-style, signed, and nothing of the API's.
+        assert!(r.target.starts_with("/files"), "{}", r.target);
+        let auth = header_of(&r.headers, "authorization").unwrap();
+        assert!(auth.starts_with(&format!("AWS4-HMAC-SHA256 Credential={S3_ACCESS}/")), "{auth}");
+        assert!(auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"), "{auth}");
+        assert!(r.headers.iter().all(|(_, v)| !v.contains("sl_test")), "the API key reached the S3 endpoint: {r:?}");
+        assert!(!r.headers.iter().any(|(k, _)| k == "x-organization-id"));
+    }
+    // A file is hashed before it is sent, so the signed payload is a real digest (never unsigned).
+    let puts: Vec<_> = seen.iter().filter(|r| r.method == "PUT").collect();
+    assert!(!puts.is_empty());
+    for r in puts {
+        let h = header_of(&r.headers, "x-amz-content-sha256").unwrap();
+        assert!(h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()), "{h}");
+        assert!(header_of(&r.headers, "content-length").is_some());
+    }
+    // Keys with spaces, plus signs and non-ASCII travel percent-encoded exactly once.
+    assert!(
+        seen.iter().any(|r| r.target.contains("hello%20world%2B1.txt")),
+        "{:?}",
+        seen.iter().map(|r| &r.target).collect::<Vec<_>>()
+    );
+    assert!(seen.iter().any(|r| r.target.contains("caf%C3%A9/%C3%BCn%C3%AF.txt")));
+}
+
+#[test]
+fn s3_files_against_a_real_server_when_one_is_named() {
+    let Ok(endpoint) = std::env::var("SLIPLANE_TEST_S3_ENDPOINT") else {
+        eprintln!("skipped: SLIPLANE_TEST_S3_ENDPOINT is not set (see the notes above the s3 tests)");
+        return;
+    };
+    let var = |k: &str, default: &str| std::env::var(k).unwrap_or_else(|_| default.to_string());
+    files_scenario(&S3Target {
+        endpoint,
+        bucket: var("SLIPLANE_TEST_S3_BUCKET", "testbucket"),
+        access: var("SLIPLANE_TEST_S3_ACCESS_KEY", "minioadmin"),
+        secret: var("SLIPLANE_TEST_S3_SECRET_KEY", "minioadmin"),
+    });
+}
+
+/// More than one page of real keys. Slow (it uploads 1,010 files, one CLI run each), so it only runs when asked for twice.
+#[test]
+fn s3_a_real_server_lists_more_than_one_page() {
+    let (Ok(endpoint), Ok(_)) = (std::env::var("SLIPLANE_TEST_S3_ENDPOINT"), std::env::var("SLIPLANE_TEST_S3_MANY"))
+    else {
+        eprintln!("skipped: needs SLIPLANE_TEST_S3_ENDPOINT and SLIPLANE_TEST_S3_MANY=1");
+        return;
+    };
+    let var = |k: &str, default: &str| std::env::var(k).unwrap_or_else(|_| default.to_string());
+    let (bucket, access, secret) = (
+        var("SLIPLANE_TEST_S3_BUCKET", "testbucket"),
+        var("SLIPLANE_TEST_S3_ACCESS_KEY", "minioadmin"),
+        var("SLIPLANE_TEST_S3_SECRET_KEY", "minioadmin"),
+    );
+    let api = api_for(&endpoint, &bucket, &access, &secret, "active");
+    let env = Env::new(&api).with_account();
+    assert_eq!(env.json(&["s3", "connect", "-a", "work", "--bucket", &bucket]).0, 0);
+    let p = format!("many-{}", std::process::id());
+    let file = env.dir.join("one.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let total = 1010;
+
+    // Eight uploaders at a time; every one is a separate run of the CLI.
+    std::thread::scope(|scope| {
+        for worker in 0..8 {
+            let (env, bucket, p, file) = (&env, &bucket, &p, &file);
+            scope.spawn(move || {
+                for i in (worker..total).step_by(8) {
+                    let key = format!("{p}/k{i:05}");
+                    let out = run_with(
+                        env,
+                        &[
+                            "s3",
+                            "upload",
+                            "-a",
+                            "work",
+                            "--bucket",
+                            bucket,
+                            "--file",
+                            file.to_str().unwrap(),
+                            "--key",
+                            &key,
+                        ],
+                        &[],
+                    );
+                    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+                }
+            });
+        }
+    });
+
+    let prefix = format!("{p}/");
+    let (code, out, err) =
+        env.json(&["s3", "ls", "-a", "work", "--bucket", &bucket, "--recursive", "--limit", "0", "--prefix", &prefix]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["count"], total, "the listing stopped at the first page");
+    let keys = keys_of(&out);
+    assert!(keys.windows(2).all(|w| w[0] < w[1]), "keys repeat or are out of order");
+    // The default limit (1000) stops with a token, and the token finishes the job.
+    let (_, first, _) = env.json(&["s3", "ls", "-a", "work", "--bucket", &bucket, "--recursive", "--prefix", &prefix]);
+    assert_eq!((first["count"].as_u64(), first["truncated"].as_bool()), (Some(1000), Some(true)));
+    let token = first["nextToken"].as_str().unwrap();
+    let (_, rest, _) = env.json(&[
+        "s3",
+        "ls",
+        "-a",
+        "work",
+        "--bucket",
+        &bucket,
+        "--recursive",
+        "--prefix",
+        &prefix,
+        "--token",
+        token,
+    ]);
+    assert_eq!(rest["count"], total - 1000);
+    assert_eq!(rest["truncated"], false);
+
+    for chunk in keys.chunks(25) {
+        let mut args = vec!["s3", "rm", "-a", "work", "--bucket", &bucket];
+        for k in chunk {
+            args.extend(["--key", k]);
+        }
+        assert_eq!(env.json(&args).0, 0);
+    }
+    assert_eq!(
+        env.json(&["s3", "ls", "-a", "work", "--bucket", &bucket, "--recursive", "--prefix", &prefix]).1["count"],
+        0
+    );
+}
+
+#[test]
+fn s3_a_key_that_is_not_active_yet_is_waited_for() {
+    let s3 = start_s3(S3Opts { reject_first: 2, ..Default::default() });
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let started = std::time::Instant::now();
+    let (code, out, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "connected");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2), "it did not wait");
+    assert_eq!(s3.requests().len(), 3, "two refusals, then the one that worked");
+}
+
+#[test]
+fn s3_a_key_that_never_activates_is_kept_and_the_retry_reuses_it() {
+    let s3 = start_s3(S3Opts { reject_first: 3, ..Default::default() });
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files", "--timeout", "2"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("did not become usable within 2s"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("InvalidAccessKeyId"), "{err}");
+    assert!(err["remediation"].as_str().unwrap().contains("sliplane s3 connect -a work --bucket-id sb_1"));
+    // The key was made and kept; the retry makes no second one.
+    assert!(std::fs::read_to_string(env.dir.join("secrets.json")).unwrap().contains("s3:work:sb_1"));
+    let (code, out, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files", "--timeout", "10"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["reused"], true);
+    assert_eq!(api.requests().iter().filter(|r| r.method == "POST").count(), 1);
+}
+
+#[test]
+fn s3_a_wrong_secret_is_an_auth_error_that_keeps_the_s3_code() {
+    let s3 = start_s3(S3Opts::default());
+    let api = api_for(&s3.url, "files", S3_ACCESS, "not-the-secret", "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 3, "{err}");
+    assert_eq!(err["code"], "auth_required");
+    assert!(err["detail"].as_str().unwrap().contains("SignatureDoesNotMatch"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("HTTP 403"));
+    assert!(err["remediation"].as_str().unwrap().contains("s3 disconnect"));
+    assert!(!err.to_string().contains("not-the-secret"));
+}
+
+#[test]
+fn s3_a_redirect_is_not_followed_and_nothing_is_sent_after_it() {
+    let target = start_s3(S3Opts::default());
+    let s3 = start_s3(S3Opts { redirect: Some(target.url.clone()), ..Default::default() });
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("redirect"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("HTTP 307"));
+    assert_eq!(s3.requests().len(), 1);
+    assert!(target.requests().is_empty(), "the redirect was followed: {:?}", target.requests());
+}
+
+#[test]
+fn s3_an_endpoint_that_would_send_keys_in_the_clear_costs_nothing() {
+    // Plain HTTP to anything but loopback would send signed requests, and file contents, unencrypted.
+    let api = api_for("http://s3.example.com", "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("plain HTTP"), "{err}");
+    assert!(api.requests().iter().all(|r| r.method != "POST"), "a key was made for an endpoint that cannot be used");
+}
+
+#[test]
+fn s3_a_bucket_that_is_going_away_is_refused() {
+    let s3 = start_s3(S3Opts::default());
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "queued_for_deletion");
+    let env = Env::new(&api).with_account();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_eq!(code, 6, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("queued_for_deletion"));
+    assert!(api.requests().iter().all(|r| r.method != "POST"));
+}
+
+#[test]
+fn s3_arguments_are_checked_before_any_request() {
+    let api = api_for("http://127.0.0.1:9", "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let before = api.requests().len();
+    let run = |args: &[&str]| {
+        let mut all = vec!["s3"];
+        all.extend_from_slice(args);
+        env.json(&all)
+    };
+    // No bucket named.
+    assert_eq!(run(&["ls", "-a", "work"]).0, 6);
+    // No account named.
+    assert_eq!(run(&["ls", "--bucket", "files"]).0, 7);
+    // A key Git Bash mangled from "/logs/a.txt".
+    let (code, _, err) = run(&["rm", "-a", "work", "--bucket", "files", "--key", "C:/Program Files/Git/logs/a.txt"]);
+    assert_eq!(code, 6);
+    assert!(err["error"].as_str().unwrap().contains("Windows path"));
+    let (code, _, _) = run(&["ls", "-a", "work", "--bucket", "files", "--prefix", "C:/Program Files/Git/logs"]);
+    assert_eq!(code, 6);
+    // Empty and over-long keys; a file that is not there; a directory.
+    assert_eq!(run(&["rm", "-a", "work", "--bucket", "files", "--key", ""]).0, 6);
+    assert_eq!(run(&["rm", "-a", "work", "--bucket", "files", "--key", &"k".repeat(1025)]).0, 6);
+    assert_eq!(run(&["upload", "-a", "work", "--bucket", "files", "--file", "no-such-file.bin"]).0, 6);
+    assert_eq!(run(&["upload", "-a", "work", "--bucket", "files", "--file", env.dir.to_str().unwrap()]).0, 6);
+    assert_eq!(run(&["download", "-a", "work", "--bucket", "files", "--key", "logs/"]).0, 6);
+    assert_eq!(api.requests().len(), before, "an invalid call still made a request");
+}
+
+#[test]
+fn s3_disconnect_by_id_needs_no_network() {
+    let api = api_for("http://127.0.0.1:9", "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    let before = api.requests().len();
+    let (code, out, err) = env.json(&["s3", "disconnect", "-a", "work", "--bucket-id", "sb_gone"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "not_connected");
+    assert_eq!(api.requests().len(), before);
+}
+
+#[test]
+fn s3_connect_revokes_the_key_it_cannot_keep() {
+    let s3 = start_s3(S3Opts::default());
+    let api = api_for(&s3.url, "files", S3_ACCESS, S3_SECRET, "active");
+    let env = Env::new(&api).with_account();
+    // A keystore that cannot be written: the file it writes through is a directory.
+    std::fs::create_dir(env.dir.join("secrets.json.tmp")).unwrap();
+    let (code, _, err) = env.json(&["s3", "connect", "-a", "work", "--bucket", "files"]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("could not be stored"), "{err}");
+    assert!(err["detail"].as_str().unwrap().contains("sk_1 was revoked"), "{err}");
+    assert_eq!(api.last("DELETE").path, "buckets/sb_1/keys/sk_1");
+    assert!(s3.requests().is_empty(), "the unusable key was probed");
+}
