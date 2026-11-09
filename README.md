@@ -167,7 +167,7 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | Command | Description |
 |:---|:---|
 | `sliplane postgres list` | List all managed PostgreSQL instances |
-| `sliplane postgres get --postgres-id <id>` | Retrieve database connection endpoints and credentials |
+| `sliplane postgres get --postgres-id <id> [--show-secrets]` | Retrieve database details and connection endpoints; the password and URI read `<hidden>` unless `--show-secrets` is given |
 | `sliplane postgres create --name <n> --instance-type <t> --region <r>` | Provision a managed PostgreSQL instance |
 | `sliplane postgres update --postgres-id <id> --ip-allow <cidr>=<label>` | Update instance configuration or IP allowlist |
 | `sliplane postgres rotate-credentials --postgres-id <id>` | Rotate database access password |
@@ -299,7 +299,7 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - Host keys are trusted on first use and then checked: they live in `known_hosts` next to `config.yaml`, never in `~/.ssh`. A changed key stops the command and prints the `ssh-keygen -R` that forgets the old one.
    - The tunnel prints one `status: listening` object on stdout once the local port is up, then runs until it is interrupted (Ctrl-C, SIGTERM) or `--for` elapses. A hard kill (SIGKILL, or ending the process on Windows) cannot clean up; the key then expires on its own.
 7. **Running SQL (`postgres query`)**:
-   - It connects to the database itself, with the credentials `postgres get` returns, so the key needs **Secrets: Read** (without it the password reads back empty and the command says so). The connection is always TLS with the certificate checked against the host name (libpq's `verify-full`), logs in with SCRAM-SHA-256, and runs your SQL with the Simple Query protocol: several statements in one `--sql` run as one transaction, and each gets its own result.
+   - It connects to the database itself, with the credentials the API returns (which `postgres get` hides unless `--show-secrets`), so the key needs **Secrets: Read** (without it the password reads back empty and the command says so). The connection is always TLS with the certificate checked against the host name (libpq's `verify-full`), logs in with SCRAM-SHA-256, and runs your SQL with the Simple Query protocol: several statements in one `--sql` run as one transaction, and each gets its own result.
    - **The session is read-only unless you pass `--write`.** A write without it fails with SQLSTATE `25006` and an error that says to add `--write`. This is a guard against accidents, not a sandbox: SQL can lift it (`BEGIN READ WRITE`), so the database role's privileges are the real boundary.
    - Rows are data: `columns` (name, Postgres type, OID) and `rows` as objects. `bool`, `int2/4/8`, `float4/8`, `json` and `jsonb` become JSON values, `NULL` is `null`, and everything else - `numeric` included, so no precision is lost - is the text Postgres prints. A repeated column name gets a distinct key (`a`, `a_2`) and a warning. At most `--max-rows` (1000) rows are kept per statement; `rowCount` still counts all of them and `truncated` says so. `--timeout` (30s) is also the server's `statement_timeout`.
    - When nothing answers, the error points at the IP allow list: `sliplane postgres allowlist add --my-ip`. The database password and connection string never reach stdout, stderr or an error.

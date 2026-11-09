@@ -4970,3 +4970,99 @@ fn postgres_query_against_a_real_postgres() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------------------------
+// postgres: connection.password and connection.uri are hidden unless --show-secrets
+
+/// Runs a command with `--json`; returns the parsed stdout, the raw stdout and the raw stderr.
+fn pg_print(env: &Env, args: &[&str]) -> (Value, String, String) {
+    let mut all = args.to_vec();
+    all.push("--json");
+    let out = env.run(&all);
+    let (stdout, stderr) =
+        (String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string());
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    (serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("not JSON ({e}): {stdout}")), stdout, stderr)
+}
+
+#[test]
+fn postgres_get_hides_the_password_and_uri_unless_asked() {
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, pg_db(json!([])))]);
+    let env = Env::new(&mock).with_account();
+    let get = ["postgres", "get", "--postgres-id", "pg_1", "-a", "work"];
+
+    let (out, stdout, stderr) = pg_print(&env, &get);
+    assert_eq!(out["connection"]["password"], "<hidden>");
+    assert_eq!(out["connection"]["uri"], "<hidden>");
+    assert_eq!(out["connection"]["host"], "pg.example", "only the secrets are hidden");
+    assert_eq!((out["connection"]["port"].as_u64(), out["connection"]["user"].as_str()), (Some(5432), Some("u")));
+    assert!(!stdout.contains(PG_PASSWORD) && !stderr.contains(PG_PASSWORD), "{stdout}{stderr}");
+    assert!(stderr.contains("--show-secrets"), "the note says how to see them: {stderr}");
+
+    // The default YAML output hides them too.
+    let raw = env.run(&get);
+    let yaml = format!("{}{}", String::from_utf8_lossy(&raw.stdout), String::from_utf8_lossy(&raw.stderr));
+    assert!(yaml.contains("<hidden>") && !yaml.contains(PG_PASSWORD), "{yaml}");
+
+    let mut shown = get.to_vec();
+    shown.push("--show-secrets");
+    let (out, _, stderr) = pg_print(&env, &shown);
+    assert_eq!(out["connection"]["password"], PG_PASSWORD);
+    assert_eq!(out["connection"]["uri"], format!("postgres://u:{PG_PASSWORD}@pg.example:5432/d"));
+    assert!(!stderr.contains("hidden"), "nothing was hidden, so nothing is noted: {stderr}");
+}
+
+#[test]
+fn a_blank_password_stays_blank_so_a_missing_scope_is_still_visible() {
+    let mut db = pg_db(json!([]));
+    db["connection"]["password"] = json!("");
+    db["connection"]["uri"] = json!("");
+    let mock = Mock::start(vec![me(), ("GET", "postgres/pg_1", 200, db)]);
+    let env = Env::new(&mock).with_account();
+    let (out, _, stderr) = pg_print(&env, &["postgres", "get", "--postgres-id", "pg_1", "-a", "work"]);
+    assert_eq!((out["connection"]["password"].as_str(), out["connection"]["uri"].as_str()), (Some(""), Some("")));
+    assert!(!stderr.contains("hidden"), "{stderr}");
+}
+
+#[test]
+fn every_postgres_command_that_prints_a_database_hides_its_secrets() {
+    let db = pg_db(json!([]));
+    let mock = Mock::start(vec![
+        me(),
+        ("GET", "postgres", 200, json!([db.clone(), db.clone()])),
+        ("PATCH", "postgres/pg_1", 200, db.clone()),
+        ("POST", "postgres/pg_1/pause", 200, db.clone()),
+        ("POST", "postgres/pg_1/credentials/rotate", 200, db.clone()),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let id = ["--postgres-id", "pg_1", "-a", "work"];
+    let with = |head: &[&'static str]| head.iter().copied().chain(id).collect::<Vec<_>>();
+
+    let (out, stdout, _) = pg_print(&env, &["postgres", "list", "-a", "work"]);
+    assert_eq!(out.as_array().map(Vec::len), Some(2));
+    assert!(out.as_array().unwrap().iter().all(|d| d["connection"]["password"] == "<hidden>"), "{stdout}");
+    assert!(!stdout.contains(PG_PASSWORD), "{stdout}");
+
+    for head in [
+        vec!["postgres", "update", "--name", "renamed"],
+        vec!["postgres", "pause"],
+        vec!["postgres", "rotate-credentials"],
+    ] {
+        let (out, stdout, stderr) = pg_print(&env, &with(&head));
+        assert_eq!(out["connection"]["password"], "<hidden>", "{head:?}: {stdout}");
+        assert!(!stdout.contains(PG_PASSWORD) && !stderr.contains(PG_PASSWORD), "{head:?}: {stdout}{stderr}");
+    }
+
+    // A rotation is the one time a person wants the new password at once.
+    let (out, _, _) = pg_print(&env, &with(&["postgres", "rotate-credentials", "--show-secrets"]));
+    assert_eq!(out["connection"]["password"], PG_PASSWORD);
+}
+
+#[test]
+fn show_secrets_is_refused_where_there_is_nothing_to_show() {
+    let mock = Mock::start(vec![me()]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["postgres", "delete", "--postgres-id", "pg_1", "--show-secrets", "-a", "work"]);
+    assert_eq!(code, 6, "{err}");
+    assert!(mock.requests().iter().all(|r| r.method != "DELETE"), "nothing was deleted");
+}

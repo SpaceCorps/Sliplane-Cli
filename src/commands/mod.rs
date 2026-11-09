@@ -207,8 +207,8 @@ fn postgres(mut c: Postgres) -> Result<()> {
     }
     let at = |p: &PgId, tail: &str| format!("postgres/{}{tail}", seg(&p.postgres_id));
     match c {
-        Postgres::List(a) => print(client(&a)?.get("postgres")?),
-        Postgres::Get(p) => print(client(&p.a)?.get(&at(&p, ""))?),
+        Postgres::List(a) => print(postgres::hidden(client(&a)?.get("postgres")?)),
+        Postgres::Get { p, s } => print(postgres::shown(client(&p.a)?.get(&at(&p, ""))?, s.show_secrets)),
         Postgres::Create {
             name,
             instance_type,
@@ -240,7 +240,7 @@ fn postgres(mut c: Postgres) -> Result<()> {
             if let Some(v) = ip_allow_list(&ip) {
                 body["ipAllowList"] = v;
             }
-            print(client(&a)?.post("postgres", &body)?)
+            print(postgres::hidden(client(&a)?.post("postgres", &body)?))
         }
         Postgres::Update { p, name, instance_type, disk_size_gb, ip } => {
             let mut body = obj! {};
@@ -261,25 +261,27 @@ fn postgres(mut c: Postgres) -> Result<()> {
                     "Nothing to update. Pass --name, --instance-type, --disk-size-gb, --ip-allow or --block-public-ips.",
                 ));
             }
-            print(client(&p.a)?.patch(&at(&p, ""), &body)?)
+            print(postgres::hidden(client(&p.a)?.patch(&at(&p, ""), &body)?))
         }
         Postgres::Delete(p) => {
             let r = client(&p.a)?.delete(&at(&p, ""))?;
             done(r, "deleted", obj! { "postgresId" => p.postgres_id })
         }
         Postgres::Pause(p) => {
-            let r = client(&p.a)?.post_empty(&at(&p, "/pause"))?;
+            let r = postgres::hidden(client(&p.a)?.post_empty(&at(&p, "/pause"))?);
             done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "pause" })
         }
         Postgres::Unpause(p) => {
-            let r = client(&p.a)?.post_empty(&at(&p, "/unpause"))?;
+            let r = postgres::hidden(client(&p.a)?.post_empty(&at(&p, "/unpause"))?);
             done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "unpause" })
         }
         Postgres::Restart(p) => {
-            let r = client(&p.a)?.post_empty(&at(&p, "/restart"))?;
+            let r = postgres::hidden(client(&p.a)?.post_empty(&at(&p, "/restart"))?);
             done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "restart" })
         }
-        Postgres::RotateCredentials(p) => print(client(&p.a)?.post_empty(&at(&p, "/credentials/rotate"))?),
+        Postgres::RotateCredentials { p, s } => {
+            print(postgres::shown(client(&p.a)?.post_empty(&at(&p, "/credentials/rotate"))?, s.show_secrets))
+        }
         Postgres::Logs { p, since, until, limit } => postgres::logs(&p, since, until, limit),
         Postgres::Connections(p) => print(client(&p.a)?.get(&at(&p, "/active-connections"))?),
         Postgres::Metrics { p, r } => print(client(&p.a)?.get(&at(&p, &format!("/metrics{}", metrics_query(&r))))?),
