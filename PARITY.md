@@ -89,6 +89,9 @@ Status: **Have** (already here), **Done** (ported), **Open** (not built; the not
 - Two presets (`open-webui`, `lobe-chat`) ship an empty required API key, so `presets deploy` refuses
   until it is supplied with `--secret-env`.
 - The official CLI never sends `to` to the logs endpoint, so it cannot page backwards. Ours can.
+
+The research behind this file is in [`research/official-cli-2026-10-31/`](research/official-cli-2026-10-31/README.md), and the work that
+is still undone is in [`FOLLOWUPS.md`](FOLLOWUPS.md).
 - The official CLI retries only when ssh says exactly `Permission denied (publickey)`. A server that also offers
   another method answers `(publickey,keyboard-interactive)`, which it would treat as a hard failure. Ours matches the prefix.
 - MinIO no longer publishes `minio/minio` on Docker Hub (the pull is refused) and `quay.io/minio/minio` answers 401, so the real-server S3 tests ran against `bitnamilegacy/minio` (MinIO `DEVELOPMENT.2025-05-24`). `docker run` under Git Bash also rewrites a `/data` argument; use PowerShell or `//data`.
