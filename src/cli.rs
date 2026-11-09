@@ -734,6 +734,15 @@ pub struct PgId {
     pub a: Account,
 }
 
+/// `--show-secrets` for the Postgres commands that print a connection: without it the password and
+/// the connection string read `<hidden>`, so they do not land in a transcript by accident.
+#[derive(Args)]
+pub struct ShowSecrets {
+    /// Print connection.password and connection.uri instead of hiding them (needs a key with secrets:read)
+    #[arg(long)]
+    pub show_secrets: bool,
+}
+
 #[derive(Args)]
 pub struct IpAllow {
     /// Source IP range allowed to connect, as CIDR or CIDR=description (repeatable, replaces the whole list)
@@ -748,8 +757,13 @@ pub struct IpAllow {
 pub enum Postgres {
     /// List all Postgres databases
     List(Account),
-    /// Get Postgres database details
-    Get(PgId),
+    /// Get Postgres database details. The password and connection string are hidden unless --show-secrets is given
+    Get {
+        #[command(flatten)]
+        p: PgId,
+        #[command(flatten)]
+        s: ShowSecrets,
+    },
     /// Create a new Postgres database
     Create {
         /// The display name shown in the dashboard
@@ -804,8 +818,13 @@ pub enum Postgres {
     Unpause(PgId),
     /// Restart a Postgres database
     Restart(PgId),
-    /// Rotate generated Postgres credentials
-    RotateCredentials(PgId),
+    /// Rotate generated Postgres credentials. The new password is hidden unless --show-secrets is given
+    RotateCredentials {
+        #[command(flatten)]
+        p: PgId,
+        #[command(flatten)]
+        s: ShowSecrets,
+    },
     /// List recent Postgres server logs
     Logs {
         #[command(flatten)]
@@ -1196,18 +1215,18 @@ impl Postgres {
     pub fn database_mut(&mut self) -> Option<&mut PgId> {
         match self {
             Postgres::List(_) | Postgres::Create { .. } => None,
-            Postgres::Get(p)
-            | Postgres::Delete(p)
+            Postgres::Delete(p)
             | Postgres::Pause(p)
             | Postgres::Unpause(p)
             | Postgres::Restart(p)
-            | Postgres::RotateCredentials(p)
             | Postgres::Connections(p)
             | Postgres::RelationSizes(p)
             | Postgres::SlowQueries(p)
             | Postgres::TopQueries(p)
             | Postgres::RestoreWindow(p) => Some(p),
-            Postgres::Update { p, .. }
+            Postgres::Get { p, .. }
+            | Postgres::RotateCredentials { p, .. }
+            | Postgres::Update { p, .. }
             | Postgres::Logs { p, .. }
             | Postgres::Metrics { p, .. }
             | Postgres::Restore { p, .. } => Some(p),

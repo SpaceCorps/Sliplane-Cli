@@ -35,6 +35,7 @@ const RULES: &[&str] = &[
     "--env replaces the whole environment. Use 'services set-env' to change one variable, or --merge-env to keep the rest.",
     "Secret env values read back empty, so they cannot be copied between services.",
     "A key without the secrets:read scope reads every env value and database password back empty. 'sliplane me' lists a key's scopes; check it before copying values around.",
+    "Postgres commands print connection.password and connection.uri as <hidden>. Do not pass --show-secrets unless the human asked for the password, and never paste it into source, logs or commits; psql is not needed, use 'postgres query'.",
     "A service cannot move between a registry image and a repository build; it must be recreated.",
     "Deletes are irreversible and take no confirmation. Read the resource back before deleting it.",
     "A deploy that the API accepted is not a deploy that finished. Pass --wait, or read 'services events' and 'services logs', before you report success.",
@@ -134,6 +135,7 @@ the only receipt that the name found the thing you meant.
     sliplane presets list [--search <text>] [--tag <tag>]          # no account needed
     sliplane presets show <preset-id>                              # no account needed
     sliplane postgres list -a <account>
+    sliplane postgres get --postgres-id <id> -a <account> [--show-secrets]   # password and URI read <hidden> without the flag
     sliplane postgres metrics --postgres-id <id> -a <account> [--range 10min|1h|24h | --from <unix> --to <unix>]
     sliplane postgres logs --postgres-id <id> -a <account> [--since 30m | --since <rfc3339>] [--until <rfc3339>] [--limit 1..1000]
     sliplane postgres allowlist show --postgres-id <id> -a <account> [--my-ip [--ipv4|--ipv6]]
@@ -374,6 +376,14 @@ name are kept, in order, and a list the API did not show is never edited blind. 
   or a VPN shows the address of the NAT or VPN, which is also what the database sees.
   `show --my-ip` reports it as `myIp` and `myIpAllowed` without changing anything.
 - Two writers editing the same list at once can overwrite each other (read, change, write).
+
+**The database password and connection string are hidden when printed.** `postgres get`, `list`,
+`update`, `pause`, `unpause`, `restart`, `restore` and `rotate-credentials` show `connection.password`
+and `connection.uri` as `<hidden>` (a note on stderr says so). An empty value is left empty: that is a
+key without `secrets:read`, not hiding. `postgres get --show-secrets` and `postgres rotate-credentials
+--show-secrets` print the real values; use them only when the human asked for the password, since
+whatever is printed lands in your transcript. `postgres query` and `connect` read the password
+themselves and never print it, so they need neither the flag nor `psql`.
 
 **`postgres query` runs SQL on the database itself** (not through the Sliplane API) and returns the
 rows as data, so you never need `psql`. It needs a key with `secrets:read` - without it the API

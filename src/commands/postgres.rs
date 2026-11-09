@@ -23,6 +23,49 @@ fn at(p: &PgId, tail: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
+// hiding the connection secrets
+
+/// What `connection.password` and `connection.uri` read when they are not shown. A distinct word, not
+/// an empty string: an empty password already means "this key has no `secrets:read`".
+const HIDDEN: &str = "<hidden>";
+
+/// Hides the password and the connection string (which contains it) in a database object, or in each
+/// object of a list. Empty values are left alone, so a key without `secrets:read` still reads empty.
+fn hide(v: &mut Value) -> bool {
+    match v {
+        Value::Array(items) => items.iter_mut().fold(false, |any, item| hide(item) | any),
+        Value::Object(db) => {
+            let Some(Value::Object(connection)) = db.get_mut("connection") else { return false };
+            ["password", "uri"].into_iter().fold(false, |any, key| match connection.get_mut(key) {
+                Some(secret @ Value::String(_)) if secret.as_str().is_some_and(|s| !s.is_empty()) => {
+                    *secret = json!(HIDDEN);
+                    true
+                }
+                _ => any,
+            })
+        }
+        _ => false,
+    }
+}
+
+/// A database response as it is printed: secrets hidden, with a note on stderr saying how to see them.
+/// Everything that prints a database goes through here or `shown`; `postgres query` and `connect` read
+/// the raw response instead, because they need the password and never print it.
+pub fn hidden(mut v: Value) -> Value {
+    if hide(&mut v) {
+        eprintln!(
+            "note: connection.password and connection.uri are hidden. 'sliplane postgres get --show-secrets' prints them."
+        );
+    }
+    v
+}
+
+/// `hidden`, unless the caller asked to see the secrets.
+pub fn shown(v: Value, show_secrets: bool) -> Value {
+    if show_secrets { v } else { hidden(v) }
+}
+
+// ---------------------------------------------------------------------------------------------
 // logs and restore
 
 /// `--since` takes a duration or a timestamp; this API wants a timestamp.
@@ -50,7 +93,7 @@ pub fn restore(p: &PgId, timestamp: Option<String>) -> Result<()> {
             latest.to_string()
         }
     };
-    let r = client.post(&at(p, "/restore"), &json!({ "timestamp": timestamp }))?;
+    let r = hidden(client.post(&at(p, "/restore"), &json!({ "timestamp": timestamp }))?);
     done(r, "accepted", obj! { "postgresId" => p.postgres_id, "action" => "restore", "timestamp" => timestamp })
 }
 

@@ -210,6 +210,12 @@ never read, printed, or in argv except as the `-i` path. The tests replace ssh a
 `examples/fake_ssh*.rs`; run `cargo build --examples` first if you use `cargo test --test cli` alone
 (the test falls back to doing it).
 
+**Database secrets are hidden at the print, not at the fetch.** `commands/postgres.rs::hidden` blanks
+`connection.password` and `connection.uri` in every Postgres response that is printed (`shown` skips it for
+`--show-secrets`). `postgres query` and `connect` call the API themselves and need the real password, so they
+must never go through `print`; a new Postgres command that prints a database has to call `hidden`. The marker
+is `<hidden>` and not `""`, because `""` is how a key without `secrets:read` reads.
+
 **Never follow logs without a bound in a test or an agent flow.** `--follow` with no `--for` runs until
 interrupted. The tests use `--for 1s`.
 
