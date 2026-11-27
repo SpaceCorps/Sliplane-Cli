@@ -2,8 +2,7 @@
 
 use clap::{Args, Parser, Subcommand};
 
-const INSTANCE_TYPES: &str = "starter, base, medium, large, x-large, xx-large, dedicated-base, dedicated-medium, \
-                              dedicated-large, dedicated-x-large, dedicated-xx-large, dedicated-xxx-large";
+use crate::catalog::{self, POSTGRES_DISK_GB, SERVER_DISK_GB};
 
 #[derive(Parser)]
 #[command(
@@ -282,13 +281,12 @@ pub enum Servers {
         /// The name of the server
         #[arg(long)]
         name: String,
-        #[arg(long, value_name = "TYPE", help = format!("Instance type: {INSTANCE_TYPES}"))]
+        #[arg(long, value_name = "TYPE", help = format!("Instance type: {}", catalog::instance_types()))]
         instance_type: String,
         /// Location: ger, fin, us-east, us-west, sin, conf (Germany (Confidential) - needs the Confidential Data Agreement accepted under Team > Compliance, dedicated types only). Legacy: fsn, nbg, hel, ash, hil
         #[arg(long)]
         location: String,
-        /// Larger data disk than bundled with the instance type: 50, 100, 250, 500, 1000
-        #[arg(long, value_name = "SIZE")]
+        #[arg(long, value_name = "SIZE", help = format!("Larger data disk than bundled with the instance type: {}", catalog::sizes(SERVER_DISK_GB)))]
         disk_size_gb: Option<u32>,
         /// Billing cycle: hourly (default), monthly, yearly
         #[arg(long, value_name = "CYCLE")]
@@ -311,8 +309,7 @@ pub enum Servers {
     },
     /// Rescale a server's data disk (grow only)
     RescaleDisk {
-        /// New data disk size in GB: 50, 100, 250, 500, 1000 (can only grow)
-        #[arg(long, value_name = "SIZE")]
+        #[arg(long, value_name = "SIZE", help = format!("New data disk size in GB: {} (can only grow)", catalog::sizes(SERVER_DISK_GB)))]
         disk_size_gb: u32,
         #[command(flatten)]
         s: ServerId,
@@ -345,6 +342,78 @@ pub enum Servers {
         #[command(flatten)]
         s: ServerId,
     },
+    /// See, change or turn off the policy that grows the server by itself (CPU, memory, disk)
+    #[command(subcommand)]
+    Autoscaling(ServerAutoscaling),
+}
+
+#[derive(Subcommand)]
+pub enum ServerAutoscaling {
+    /// Show the autoscaling policy and its status, with the server's current size
+    Get(ServerId),
+    /// Turn rules on or change them. What you do not name is kept as it is (read-modify-write)
+    Set {
+        #[command(flatten)]
+        p: Policy,
+        #[command(flatten)]
+        s: ServerId,
+    },
+    /// Turn every rule off. Prints the policy it removed and an `undo` command
+    Clear {
+        /// Print the request that would be sent and change nothing
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        s: ServerId,
+    },
+}
+
+/// The policy flags of `servers autoscaling set` and `postgres autoscaling set`. A rule fires on
+/// consecutive one-minute averages above its threshold; increases are at least 15 minutes apart
+/// and keep the billing cycle.
+#[derive(Args, Default)]
+pub struct Policy {
+    /// CPU rule: grow compute when CPU use stays above this percent (10-95)
+    #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u32).range(10..=95))]
+    pub cpu_threshold: Option<u32>,
+    /// CPU rule: for this many minutes in a row (1-60)
+    #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u32).range(1..=60))]
+    pub cpu_minutes: Option<u32>,
+    /// Turn the CPU rule off
+    #[arg(long, conflicts_with_all = ["cpu_threshold", "cpu_minutes"])]
+    pub no_cpu: bool,
+    /// Memory rule: grow compute when memory use stays above this percent (10-95)
+    #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u32).range(10..=95))]
+    pub memory_threshold: Option<u32>,
+    /// Memory rule: for this many minutes in a row (1-60)
+    #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u32).range(1..=60))]
+    pub memory_minutes: Option<u32>,
+    /// Turn the memory rule off
+    #[arg(long, conflicts_with_all = ["memory_threshold", "memory_minutes"])]
+    pub no_memory: bool,
+    /// Disk rule: grow the disk when disk use stays above this percent (10-95)
+    #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u32).range(10..=95))]
+    pub disk_threshold: Option<u32>,
+    /// Disk rule: for this many minutes in a row (1-60)
+    #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u32).range(1..=60))]
+    pub disk_minutes: Option<u32>,
+    /// Turn the disk rule off
+    #[arg(long, conflicts_with_all = ["disk_threshold", "disk_minutes"])]
+    pub no_disk: bool,
+    #[arg(long, value_name = "TYPE", help = format!(
+        "Largest compute tier autoscaling may grow to, in the current CPU family; needed by a CPU or memory rule: {}",
+        catalog::instance_types()
+    ))]
+    pub max_instance_type: Option<String>,
+    #[arg(long, value_name = "GB", value_parser = clap::value_parser!(u64), help = format!(
+        "Largest disk in GB autoscaling may grow to, above the current one; needed by the disk rule. Servers: {}. Postgres: {}",
+        catalog::sizes(SERVER_DISK_GB),
+        catalog::sizes(POSTGRES_DISK_GB)
+    ))]
+    pub max_disk_gb: Option<u64>,
+    /// Print the request that would be sent and change nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -769,7 +838,7 @@ pub enum Postgres {
         /// The display name shown in the dashboard
         #[arg(long)]
         name: String,
-        #[arg(long, value_name = "TYPE", help = format!("Instance type: {INSTANCE_TYPES}"))]
+        #[arg(long, value_name = "TYPE", help = format!("Instance type: {}", catalog::instance_types()))]
         instance_type: String,
         /// Region: ger, fin, us-east, us-west, sin, conf (Germany (Confidential) - needs the Confidential Data Agreement accepted under Team > Compliance, dedicated types only)
         #[arg(long)]
@@ -783,8 +852,7 @@ pub enum Postgres {
         /// Name of the role to create (default: randomly generated)
         #[arg(long, value_name = "USER")]
         database_user: Option<String>,
-        /// Disk size in GB: 10, 50, 100, 250, 500, 1000 (default: 10)
-        #[arg(long, value_name = "SIZE")]
+        #[arg(long, value_name = "SIZE", help = format!("Disk size in GB: {} (default: 10)", catalog::sizes(POSTGRES_DISK_GB)))]
         disk_size_gb: Option<u32>,
         /// Billing cycle: hourly (default), monthly, yearly. A free 48-hour demo database (starter or base tier, bundled storage) defaults to monthly
         #[arg(long, value_name = "CYCLE")]
@@ -804,8 +872,7 @@ pub enum Postgres {
         /// Compute tier to rescale to (cannot scale down)
         #[arg(long, value_name = "TYPE")]
         instance_type: Option<String>,
-        /// New disk size in GB: 10, 50, 100, 250, 500, 1000 (can only grow)
-        #[arg(long, value_name = "SIZE")]
+        #[arg(long, value_name = "SIZE", help = format!("New disk size in GB: {} (can only grow)", catalog::sizes(POSTGRES_DISK_GB)))]
         disk_size_gb: Option<u32>,
         #[command(flatten)]
         ip: IpAllow,
@@ -894,6 +961,31 @@ pub enum Postgres {
     },
     /// Open psql on the database, with the credentials in its environment (needs psql 16 or newer)
     Connect(PgId),
+    /// See, change or turn off the policy that grows the database by itself (CPU, memory, disk)
+    #[command(subcommand)]
+    Autoscaling(PgAutoscaling),
+}
+
+#[derive(Subcommand)]
+pub enum PgAutoscaling {
+    /// Show the autoscaling policy and its status, with the database's current disk size
+    Get(PgId),
+    /// Turn rules on or change them. What you do not name is kept as it is (read-modify-write).
+    /// A compute increase restarts Postgres
+    Set {
+        #[command(flatten)]
+        p: Policy,
+        #[command(flatten)]
+        d: PgId,
+    },
+    /// Turn every rule off. Prints the policy it removed and an `undo` command
+    Clear {
+        /// Print the request that would be sent and change nothing
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        d: PgId,
+    },
 }
 
 /// `--my-ip` and the IP family to detect it in.
@@ -1176,6 +1268,8 @@ impl Servers {
             | Servers::Metrics { s, .. }
             | Servers::CreateVolume { s, .. }
             | Servers::RenameVolume { s, .. } => Some(s),
+            Servers::Autoscaling(ServerAutoscaling::Get(s))
+            | Servers::Autoscaling(ServerAutoscaling::Set { s, .. } | ServerAutoscaling::Clear { s, .. }) => Some(s),
         }
     }
 }
@@ -1235,6 +1329,8 @@ impl Postgres {
             Postgres::Allowlist(Allowlist::Show { p, .. } | Allowlist::Add { p, .. } | Allowlist::Remove { p, .. }) => {
                 Some(p)
             }
+            Postgres::Autoscaling(PgAutoscaling::Get(d))
+            | Postgres::Autoscaling(PgAutoscaling::Set { d, .. } | PgAutoscaling::Clear { d, .. }) => Some(d),
         }
     }
 }
@@ -1369,9 +1465,78 @@ pub struct Update {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn command_tree_is_valid() {
         use clap::CommandFactory;
         super::Cli::command().debug_assert();
+    }
+
+    fn parse(args: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        Cli::try_parse_from(["sliplane"].iter().chain(args))
+    }
+
+    #[test]
+    fn autoscaling_set_takes_a_flag_per_policy_field() {
+        let cli = parse(&[
+            "servers",
+            "autoscaling",
+            "set",
+            "--server",
+            "big",
+            "-a",
+            "work",
+            "--cpu-threshold",
+            "80",
+            "--cpu-minutes",
+            "5",
+            "--memory-threshold",
+            "10",
+            "--memory-minutes",
+            "60",
+            "--no-disk",
+            "--max-instance-type",
+            "large",
+            "--max-disk-gb",
+            "250",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Command::Servers(Servers::Autoscaling(ServerAutoscaling::Set { p, s })) = cli.command else {
+            panic!("wrong command")
+        };
+        assert_eq!((p.cpu_threshold, p.cpu_minutes), (Some(80), Some(5)));
+        assert_eq!((p.memory_threshold, p.memory_minutes), (Some(10), Some(60)), "the bounds are inclusive");
+        assert!(p.no_disk && !p.no_cpu && !p.no_memory && p.dry_run);
+        assert_eq!((p.max_instance_type.as_deref(), p.max_disk_gb), (Some("large"), Some(250)));
+        assert_eq!((s.server.as_deref(), s.a.account.as_deref()), (Some("big"), Some("work")));
+
+        let cli = parse(&["postgres", "autoscaling", "clear", "--postgres-id", "pg_1", "-a", "work"]).unwrap();
+        let Command::Postgres(Postgres::Autoscaling(PgAutoscaling::Clear { dry_run, d })) = cli.command else {
+            panic!("wrong command")
+        };
+        assert!(!dry_run);
+        assert_eq!(d.postgres_id, "pg_1");
+    }
+
+    #[test]
+    fn autoscaling_refuses_out_of_range_and_contradictory_flags() {
+        let set = ["postgres", "autoscaling", "set", "--postgres-id", "pg_1", "-a", "w"];
+        for tail in [
+            &["--cpu-threshold", "9"][..],
+            &["--cpu-threshold", "96"],
+            &["--disk-minutes", "0"],
+            &["--memory-minutes", "61"],
+            &["--cpu-threshold", "-80"],
+            &["--no-cpu", "--cpu-minutes", "5"],
+            &["--no-memory", "--memory-threshold", "50"],
+            &["--max-disk-gb", "ten"],
+        ] {
+            let args: Vec<_> = set.iter().chain(tail).copied().collect();
+            assert!(parse(&args).is_err(), "{tail:?} parsed");
+        }
+        // Names and ids conflict here as everywhere else.
+        assert!(parse(&["servers", "autoscaling", "get", "--server-id", "s", "--server", "big", "-a", "w"]).is_err());
     }
 }
