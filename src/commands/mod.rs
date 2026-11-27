@@ -3,6 +3,7 @@
 
 mod accounts;
 mod agent;
+mod autoscaling;
 mod credentials;
 mod login;
 mod logs;
@@ -123,6 +124,9 @@ pub(crate) fn metrics_query(r: &Range) -> String {
 }
 
 fn servers(mut c: Servers) -> Result<()> {
+    if let Servers::Autoscaling(ServerAutoscaling::Set { p, .. }) = &c {
+        autoscaling::named(p)?;
+    }
     if let Some(s) = c.server_mut() {
         s.check()?;
     }
@@ -174,6 +178,7 @@ fn servers(mut c: Servers) -> Result<()> {
                 &json!({ "name": name }),
             )?)
         }
+        Servers::Autoscaling(c) => autoscaling::server(c),
     }
 }
 
@@ -197,6 +202,9 @@ fn ip_allow_list(ip: &IpAllow) -> Option<Value> {
 }
 
 fn postgres(mut c: Postgres) -> Result<()> {
+    if let Postgres::Autoscaling(PgAutoscaling::Set { p, .. }) = &c {
+        autoscaling::named(p)?;
+    }
     if let Some(p) = c.database_mut() {
         p.check()?;
     }
@@ -295,6 +303,7 @@ fn postgres(mut c: Postgres) -> Result<()> {
             query::query(&p, sql, file, write, max_rows, &timeout)
         }
         Postgres::Connect(p) => query::connect(&p),
+        Postgres::Autoscaling(c) => autoscaling::postgres(c),
     }
 }
 

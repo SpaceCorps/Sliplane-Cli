@@ -1,6 +1,7 @@
 //! `sliplane` - a CLI over the Sliplane v0 REST API, built to be driven by an LLM agent.
 
 mod account;
+mod catalog;
 mod cli;
 mod client;
 mod commands;

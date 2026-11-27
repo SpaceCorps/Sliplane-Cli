@@ -26,7 +26,7 @@ pub fn print() {
 }
 
 /// The Sliplane API spec (`https://ctrl.sliplane.io/spec.json`) this build was checked against.
-pub const API_VERSION: &str = "0.11.0";
+pub const API_VERSION: &str = "0.13.0";
 
 const RULES: &[&str] = &[
     "Always pass --account. There is no default account and no environment variable.",
@@ -48,11 +48,12 @@ const RULES: &[&str] = &[
     "Keep secrets out of argv: secret variables go in a file for --secret-env-file, and a registry token is piped to 'credentials create --token-stdin'.",
     "Never ask the human for an API key or put one in a command. If no account is configured, tell them to run 'sliplane login <name>' themselves.",
     "Never open a database to the internet (a /0 entry on its allow list, which needs --allow-open) unless the human asked. An empty allow list blocks every public connection; it opens nothing.",
+    "Autoscaling grows the bill by itself, and a Postgres compute increase restarts the database. Run 'autoscaling set' only when the human asked, show them the limits (--dry-run prints the request), and never raise a limit on your own.",
 ];
 
 const README: &str = r#"# sliplane - agent operating manual
 
-A CLI over the Sliplane API (v0, spec 0.11.0): servers, services, Postgres databases, buckets,
+A CLI over the Sliplane API (v0, spec 0.13.0): servers, services, Postgres databases, buckets,
 registry credentials, SSH keys and OAuth clients. Results are YAML on stdout, errors are YAML on stderr,
 and `--json` switches both to JSON. Prompts and warnings go to stderr, so stdout is always safe
 to parse - including for deletes and other actions that return no body, which print a small
@@ -127,6 +128,7 @@ the only receipt that the name found the thing you meant.
     sliplane projects list -a <account>
     sliplane servers list -a <account>
     sliplane servers get --server-id <id> -a <account>
+    sliplane servers autoscaling get --server-id <id> -a <account>
     sliplane services list -a <account> [--project-id <id>]
     sliplane services get --project-id <id> --service-id <id> -a <account>
     sliplane services logs --project-id <id> --service-id <id> -a <account> [--since 30m | --from <unix>] [--to <unix>]
@@ -136,6 +138,7 @@ the only receipt that the name found the thing you meant.
     sliplane presets show <preset-id>                              # no account needed
     sliplane postgres list -a <account>
     sliplane postgres get --postgres-id <id> -a <account> [--show-secrets]   # password and URI read <hidden> without the flag
+    sliplane postgres autoscaling get --postgres-id <id> -a <account>
     sliplane postgres metrics --postgres-id <id> -a <account> [--range 10min|1h|24h | --from <unix> --to <unix>]
     sliplane postgres logs --postgres-id <id> -a <account> [--since 30m | --since <rfc3339>] [--until <rfc3339>] [--limit 1..1000]
     sliplane postgres allowlist show --postgres-id <id> -a <account> [--my-ip [--ipv4|--ipv6]]
@@ -277,8 +280,43 @@ environment are passed through as they are.
 
 Rotating a deploy hook (`services rotate-deploy-hook`, needs `secrets:read`) kills the old URL
 at once: update every CI secret or webhook that calls it. The current URL is in `services get`
-(`deployHookUrl`, empty without `secrets:read`). Server autoscaling (API 0.11.0) shows up in
-`servers get` but this CLI cannot change it - use the dashboard.
+(`deployHookUrl`, empty without `secrets:read`).
+
+## Autoscaling
+
+    sliplane servers autoscaling get --server <name> -a <account>
+    sliplane servers autoscaling set --server <name> -a <account> [--cpu-threshold <10-95> --cpu-minutes <1-60>] [--memory-threshold <10-95> --memory-minutes <1-60>] [--disk-threshold <10-95> --disk-minutes <1-60>] [--no-cpu] [--no-memory] [--no-disk] [--max-instance-type <type>] [--max-disk-gb <gb>] [--dry-run]
+    sliplane servers autoscaling clear --server <name> -a <account> [--dry-run]
+    sliplane postgres autoscaling get|set|clear --postgres <name> -a <account> ...   # the same flags
+
+A policy has up to three rules (CPU, memory, disk) and two limits. A rule fires when the one-minute
+average stays above `--<rule>-threshold` percent for `--<rule>-minutes` minutes in a row. CPU and
+memory grow compute one tier at a time, up to `--max-instance-type` and within the current CPU
+family (shared or dedicated); disk grows the disk up to `--max-disk-gb`. Increases are at least 15
+minutes apart, keep the billing cycle, and are never undone by themselves.
+
+1. **It costs money, and a Postgres compute increase restarts the database.** Set or change a policy
+   only when the human asked, and tell them the limits: they are as far as the bill can grow. `--dry-run`
+   prints the exact request (method, path, body) and changes nothing.
+2. **`set` changes only what you name.** The API replaces the whole policy on every write, so the CLI
+   reads it, applies your flags and sends all of it back. A rule that is off needs both its threshold
+   and its minutes; one that is on can change either. `--no-cpu`, `--no-memory` and `--no-disk` turn one
+   rule off. A `set` that would leave every rule off is refused: that is `clear`. If the API shows no
+   policy at all, nothing is written (exit 1).
+3. **Limits are checked before anything is sent** (`invalid_input`, exit 6). `--max-instance-type` must be
+   a catalog tier and `--max-disk-gb` a catalog size (servers 50, 100, 250, 500, 1000; Postgres 10, 50,
+   100, 250, 500, 1000), and a rule that is on needs its limit. A server's tier limit must be in its CPU
+   family and above its current tier; for both, the disk limit must be above the current disk. The API
+   does not report a database's compute tier, so for Postgres it is the API that refuses a tier limit
+   with no room to grow (`invalid_request`, also exit 6).
+4. **`clear` prints the policy it removed and an `undo` command** that sets it again. Where every rule
+   is already off it writes nothing and answers `status: unchanged`.
+5. **The answer is not the outcome.** `set` answers `accepted` (server) or `updated` (database);
+   `autoscaling get` shows the stored policy, and `status` (`idle`, `pending`, `failed`), `lastError`,
+   `targetInstanceType` and `targetDiskGb` show what autoscaling is doing. `servers create` and
+   `postgres create` take no policy here: create, then `autoscaling set`. A server's policy goes through
+   the endpoint `servers rescale` uses; whether it counts against the 10-per-hour rescale limit is not
+   documented.
 
 ## SSH and tunnels
 

@@ -57,10 +57,12 @@ src/
     s3.rs          s3 connect|disconnect|ls|upload|download|rm: the stored key, and the file commands
     logs.rs        services logs --follow: the poll loop and its dedupe
     postgres.rs    postgres allowlist (and its source-IP probe), logs --since, restore's default point
+    autoscaling.rs servers|postgres autoscaling get|set|clear: read-modify-write of the policy, limit checks
     query.rs       postgres query (fetch credentials, run, explain failures) and postgres connect (psql)
     wait.rs        --wait: poll events until a deploy has an outcome
     ssh.rs         services ssh|tunnel: temporary key, probe, ssh, cleanup
   presets.rs       the preset catalog: fetch, validate, generate secrets, turn a preset into a request
+  catalog.rs       instance types and disk sizes from the spec, for help text and the autoscaling checks
   pgwire.rs        a small synchronous Postgres client: TLS + SCRAM + Simple Query, rows as JSON values
   s3.rs            the S3 client: its own HTTP agent, listing/XML parsing, S3 error -> ErrorCode
   sigv4.rs         AWS Signature V4 (header-based) and the vectors it is tested against
@@ -256,8 +258,8 @@ clock is not unique enough: two tests once shared a directory and deleted each o
 ## Sliplane API notes
 
 The spec is at `https://ctrl.sliplane.io/spec.json` (rendered at `https://ctrl.sliplane.io/`, and as
-markdown at `/llms.txt`). This build was checked against **0.11.0** (`readme::API_VERSION`); the
-server reports its version in the `x-api-version` header. A copy is kept in `spec/sliplane-openapi-0.11.0.json`. When the
+markdown at `/llms.txt`). This build was checked against **0.13.0** (`readme::API_VERSION`); the
+server reports its version in the `x-api-version` header. A copy is kept in `spec/sliplane-openapi-0.13.0.json`. When the
 live version moves, fetch it, diff it against that copy, bring `src/cli.rs` up to date, and replace
 the copy.
 
@@ -275,11 +277,17 @@ No list endpoint paginates. Service logs return at most 500 lines, counting back
 limits: server create 50/h, server rescale 10/h, service create and deploy 10/min, else 400/min.
 There is no GET for a single project or bucket, and no server rename.
 
-**Server autoscaling is deliberately not exposed.** Spec 0.11.0 turned `POST /servers/{id}` into
-"Update a server" with an optional `autoscaling` policy (and made `instanceType` optional). `servers
-rescale` still sends only `instanceType`/`billingCycle`, which stays valid, and `servers get` prints the
-policy as the API returns it. Changing it from the CLI was declined; if that changes, it needs its own
-command, because the API wants autoscaling sent separately from `instanceType`/`billingCycle`.
+**Autoscaling rides on the rescale endpoints, alone.** Spec 0.11.0 turned `POST /servers/{id}` into "Update
+a server" with an optional `autoscaling` policy; 0.13.0 added the same policy to `PATCH /postgres/{id}` and to
+both creates. The API wants `autoscaling` sent apart from `instanceType`/`billingCycle`/`diskSizeGb`, so
+`commands/autoscaling.rs` sends a body with that one key, and `servers rescale` / `postgres update` never send
+it. The policy is replaced whole (`cpu`, `memory`, `disk` are required; `null` turns a rule off), so `set` is a
+read-modify-write like `postgres allowlist`, and refuses when the GET shows no `autoscaling.policy`. The live
+API reports "unset" as `maxInstanceType: ""` and `maxDiskGb: 0`; those are left out of the body rather than sent
+back. `GET /postgres/{id}` has no `instanceType`, so the "limit above the current tier" check runs for servers
+only (it reads `instanceType` from Postgres too, should a later version add it). The tier and disk lists in
+`catalog.rs` are the spec's enums: when they change, change them there. Not wired: an `autoscaling` policy on
+`servers create` / `postgres create` (create, then `set`).
 
 `me` answers with `authType` (`oauth`/`apikey`/`agent`), `tokenType` (`ro`/`rw`), `organizationId`,
 `scopes` (e.g. `services:write`, `secrets:read`; absent on a legacy key) and a nested `user`. `account::identity` reads the label from `user.email` and the organization from

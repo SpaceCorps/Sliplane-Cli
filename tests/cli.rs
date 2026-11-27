@@ -1490,7 +1490,7 @@ fn version_reports_the_build_and_the_api_it_targets() {
     assert_eq!(code, 0);
     assert_eq!(out["name"], "sliplane");
     assert_eq!(out["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(out["apiSpec"], "0.11.0");
+    assert_eq!(out["apiSpec"], "0.13.0");
 }
 
 #[test]
@@ -5065,4 +5065,307 @@ fn show_secrets_is_refused_where_there_is_nothing_to_show() {
     let (code, _, err) = env.json(&["postgres", "delete", "--postgres-id", "pg_1", "--show-secrets", "-a", "work"]);
     assert_eq!(code, 6, "{err}");
     assert!(mock.requests().iter().all(|r| r.method != "DELETE"), "nothing was deleted");
+}
+
+// ---------------------------------------------------------------------------------------------
+// autoscaling (spec 0.13.0)
+
+/// A policy with every rule off, as the live API reports it.
+fn autoscaling_off() -> Value {
+    json!({"lastActionAt": null, "lastError": "", "status": "idle", "targetDiskGb": 0, "targetInstanceType": "",
+           "policy": {"cpu": null, "disk": null, "maxDiskGb": 0, "maxInstanceType": "", "memory": null}})
+}
+
+fn server_with(autoscaling: Value) -> Value {
+    json!({"id": "srv1", "name": "big", "instanceType": "base", "diskSizeGb": 20, "status": "running",
+           "ipv4": "192.0.2.1", "autoscaling": autoscaling})
+}
+
+fn writes(mock: &Mock) -> Vec<Recorded> {
+    mock.requests().into_iter().filter(|r| r.method != "GET").collect()
+}
+
+#[test]
+fn servers_autoscaling_set_sends_the_whole_policy_and_nothing_else() {
+    let mut current = autoscaling_off();
+    current["policy"]["memory"] = json!({"thresholdPercent": 75, "durationMinutes": 10});
+    current["policy"]["maxInstanceType"] = json!("medium");
+    let mock = mock_with(vec![
+        ("GET", "servers", 200, json!([{"id": "srv1", "name": "big"}])),
+        ("GET", "servers/srv1", 200, server_with(current)),
+        ("POST", "servers/srv1", 202, json!(null)),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&[
+        "servers",
+        "autoscaling",
+        "set",
+        "--server",
+        "big",
+        "-a",
+        "work",
+        "--cpu-threshold",
+        "80",
+        "--cpu-minutes",
+        "5",
+        "--max-instance-type",
+        "large",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let post = mock.last("POST");
+    assert_eq!(post.path, "servers/srv1");
+    assert_eq!(
+        post.body.unwrap(),
+        json!({"autoscaling": {
+            "cpu": {"thresholdPercent": 80, "durationMinutes": 5},
+            "memory": {"thresholdPercent": 75, "durationMinutes": 10},
+            "disk": null,
+            "maxInstanceType": "large",
+        }}),
+        "the memory rule it did not name is sent back; no instanceType or billingCycle"
+    );
+    assert_eq!((out["status"].as_str(), out["serverId"].as_str()), (Some("accepted"), Some("srv1")));
+    assert_eq!(out["action"], "autoscaling-set");
+    assert_eq!(out["previous"]["maxInstanceType"], "medium");
+    assert_eq!(out["policy"]["cpu"]["thresholdPercent"], 80);
+}
+
+#[test]
+fn servers_autoscaling_get_prints_the_policy_with_the_current_size() {
+    let mock = mock_with(vec![("GET", "servers/srv1", 200, server_with(autoscaling_off()))]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["servers", "autoscaling", "get", "--server-id", "srv1", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["serverId"], "srv1");
+    assert_eq!((out["instanceType"].as_str(), out["diskSizeGb"].as_u64()), (Some("base"), Some(20)));
+    assert_eq!(out["autoscaling"]["status"], "idle");
+    assert!(out.get("ipv4").is_none(), "only the fields that matter for scaling: {out}");
+}
+
+#[test]
+fn autoscaling_limits_are_checked_before_anything_is_written() {
+    let mut db = pg_db(json!([]));
+    db["diskSizeGb"] = json!(50);
+    db["autoscaling"] = autoscaling_off();
+    let mock = mock_with(vec![
+        ("GET", "servers/srv1", 200, server_with(autoscaling_off())),
+        ("GET", "postgres/pg_1", 200, db),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let srv = ["servers", "autoscaling", "set", "--server-id", "srv1", "-a", "work"];
+    let pg = ["postgres", "autoscaling", "set", "--postgres-id", "pg_1", "-a", "work"];
+    let with = |head: &[&'static str], tail: &[&'static str]| head.iter().chain(tail).copied().collect::<Vec<_>>();
+
+    for (args, needle) in [
+        // Smaller than the server's current base, and the current tier itself.
+        (
+            with(&srv, &["--cpu-threshold", "80", "--cpu-minutes", "5", "--max-instance-type", "starter"]),
+            "current tier (base)",
+        ),
+        (with(&srv, &["--cpu-threshold", "80", "--cpu-minutes", "5", "--max-instance-type", "base"]), "not larger"),
+        (
+            with(
+                &srv,
+                &["--memory-threshold", "80", "--memory-minutes", "5", "--max-instance-type", "dedicated-large"],
+            ),
+            "CPU family",
+        ),
+        (
+            with(&srv, &["--memory-threshold", "80", "--memory-minutes", "5", "--max-instance-type", "huge"]),
+            "not an instance type",
+        ),
+        (with(&srv, &["--memory-threshold", "80", "--memory-minutes", "5"]), "needs --max-instance-type"),
+        (
+            with(&srv, &["--disk-threshold", "80", "--disk-minutes", "5", "--max-disk-gb", "75"]),
+            "not a server disk size",
+        ),
+        (with(&srv, &["--disk-threshold", "80"]), "--disk-threshold and --disk-minutes"),
+        // The database has 50 GB, so a 50 GB limit leaves the disk rule nothing to do.
+        (with(&pg, &["--disk-threshold", "85", "--disk-minutes", "10", "--max-disk-gb", "50"]), "current disk (50 GB)"),
+        (
+            with(&pg, &["--disk-threshold", "85", "--disk-minutes", "10", "--max-disk-gb", "20"]),
+            "not a database disk size",
+        ),
+        (with(&pg, &["--no-cpu"]), "autoscaling clear"),
+    ] {
+        let (code, _, err) = env.json(&args);
+        assert_eq!(code, 6, "{args:?}: {err}");
+        assert!(err["error"].as_str().unwrap().contains(needle), "{args:?}: {err}");
+    }
+    assert!(writes(&mock).is_empty(), "nothing was written: {:?}", writes(&mock));
+}
+
+#[test]
+fn autoscaling_flags_are_parsed_before_any_request() {
+    let mock = mock_with(vec![]);
+    let env = Env::new(&mock).with_account();
+    let before = mock.requests().len();
+    let base = ["servers", "autoscaling", "set", "--server-id", "srv1", "-a", "work"];
+    for tail in [
+        vec![],                                                     // nothing named
+        vec!["--dry-run"],                                          // still nothing named
+        vec!["--cpu-threshold", "5", "--cpu-minutes", "5"],         // below 10 percent
+        vec!["--cpu-threshold", "96", "--cpu-minutes", "5"],        // above 95 percent
+        vec!["--memory-threshold", "80", "--memory-minutes", "61"], // above 60 minutes
+        vec!["--no-disk", "--disk-threshold", "80"],                // off and on at once
+        vec!["--max-disk-gb", "lots"],
+    ] {
+        let args: Vec<_> = base.iter().copied().chain(tail.iter().copied()).collect();
+        let (code, _, err) = env.json(&args);
+        assert_eq!(code, 6, "{tail:?}: {err}");
+        assert_eq!(err["code"], "invalid_input", "{tail:?}");
+    }
+    assert_eq!(mock.requests().len(), before, "no request was made");
+}
+
+#[test]
+fn postgres_autoscaling_set_patches_and_never_prints_the_password() {
+    let mut db = pg_db(json!([]));
+    db["diskSizeGb"] = json!(10);
+    db["autoscaling"] = autoscaling_off();
+    let mut after = db.clone();
+    after["autoscaling"]["policy"]["disk"] = json!({"thresholdPercent": 85, "durationMinutes": 10});
+    after["autoscaling"]["policy"]["maxDiskGb"] = json!(50);
+    let mock = mock_with(vec![
+        ("GET", "postgres", 200, json!([{"id": "pg_1", "name": "main"}])),
+        ("GET", "postgres/pg_1", 200, db),
+        ("PATCH", "postgres/pg_1", 200, after),
+    ]);
+    let env = Env::new(&mock).with_account();
+    let args = [
+        "postgres",
+        "autoscaling",
+        "set",
+        "--postgres",
+        "main",
+        "-a",
+        "work",
+        "--disk-threshold",
+        "85",
+        "--disk-minutes",
+        "10",
+        "--max-disk-gb",
+        "50",
+        "--cpu-threshold",
+        "80",
+        "--cpu-minutes",
+        "5",
+        "--max-instance-type",
+        "medium",
+    ];
+    let (out, stdout, stderr) = pg_print(&env, &args);
+    assert_eq!(
+        mock.last("PATCH").body.unwrap(),
+        json!({"autoscaling": {
+            "cpu": {"thresholdPercent": 80, "durationMinutes": 5},
+            "memory": null,
+            "disk": {"thresholdPercent": 85, "durationMinutes": 10},
+            "maxInstanceType": "medium",
+            "maxDiskGb": 50,
+        }}),
+        "autoscaling alone: no name, instanceType, diskSizeGb or ipAllowList"
+    );
+    assert_eq!((out["status"].as_str(), out["postgresId"].as_str()), (Some("updated"), Some("pg_1")));
+    assert_eq!(out["autoscaling"]["policy"]["maxDiskGb"], 50, "the state the API answered with");
+    assert!(out.get("connection").is_none(), "{stdout}");
+    assert!(!stdout.contains(PG_PASSWORD) && !stderr.contains(PG_PASSWORD), "{stdout}{stderr}");
+
+    // `get` picks its fields too.
+    let (out, stdout, _) = pg_print(&env, &["postgres", "autoscaling", "get", "--postgres-id", "pg_1", "-a", "work"]);
+    assert_eq!((out["diskSizeGb"].as_u64(), out["name"].as_str()), (Some(10), Some("main")));
+    assert!(!stdout.contains(PG_PASSWORD), "{stdout}");
+}
+
+#[test]
+fn autoscaling_dry_run_shows_the_request_and_sends_nothing() {
+    let mock = mock_with(vec![("GET", "servers/srv1", 200, server_with(autoscaling_off()))]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&[
+        "servers",
+        "autoscaling",
+        "set",
+        "--server-id",
+        "srv1",
+        "-a",
+        "work",
+        "--disk-threshold",
+        "90",
+        "--disk-minutes",
+        "15",
+        "--max-disk-gb",
+        "100",
+        "--dry-run",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "dry_run");
+    assert_eq!(out["request"]["method"], "POST");
+    assert_eq!(out["request"]["path"], "servers/srv1");
+    assert_eq!(out["request"]["body"]["autoscaling"]["maxDiskGb"], 100);
+    assert!(writes(&mock).is_empty(), "{:?}", writes(&mock));
+}
+
+#[test]
+fn autoscaling_clear_sends_null_rules_and_prints_an_undo() {
+    let mut on = autoscaling_off();
+    on["policy"] = json!({"cpu": {"thresholdPercent": 80, "durationMinutes": 5}, "memory": null,
+                          "disk": {"thresholdPercent": 90, "durationMinutes": 15}, "maxInstanceType": "large",
+                          "maxDiskGb": 100});
+    let mock =
+        mock_with(vec![("GET", "servers/srv1", 200, server_with(on)), ("POST", "servers/srv1", 202, json!(null))]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["servers", "autoscaling", "clear", "--server-id", "srv1", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(mock.last("POST").body.unwrap(), json!({"autoscaling": {"cpu": null, "memory": null, "disk": null}}));
+    assert_eq!(out["previous"]["maxInstanceType"], "large");
+    assert_eq!(
+        out["undo"],
+        "sliplane servers autoscaling set --server-id srv1 -a work --cpu-threshold 80 --cpu-minutes 5 \
+         --disk-threshold 90 --disk-minutes 15 --max-instance-type large --max-disk-gb 100"
+    );
+}
+
+#[test]
+fn autoscaling_clear_writes_nothing_when_it_is_already_off() {
+    let mock = mock_with(vec![("GET", "servers/srv1", 200, server_with(autoscaling_off()))]);
+    let env = Env::new(&mock).with_account();
+    let (code, out, err) = env.json(&["servers", "autoscaling", "clear", "--server-id", "srv1", "-a", "work"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out["status"], "unchanged");
+    assert!(writes(&mock).is_empty(), "{:?}", writes(&mock));
+}
+
+#[test]
+fn autoscaling_is_not_edited_blind_when_the_api_shows_no_policy() {
+    let mock = mock_with(vec![("GET", "servers/srv1", 200, json!({"id": "srv1", "instanceType": "base"}))]);
+    let env = Env::new(&mock).with_account();
+    let (code, _, err) = env.json(&["servers", "autoscaling", "set", "--server-id", "srv1", "-a", "work", "--no-cpu"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err["error"].as_str().unwrap().contains("no autoscaling policy"), "{err}");
+    assert!(writes(&mock).is_empty());
+}
+
+#[test]
+fn autoscaling_is_in_the_agent_manual() {
+    let mock = Mock::start(vec![]);
+    let md = String::from_utf8(Env::new(&mock).run(&["agent-readme"]).stdout).unwrap();
+    for needed in [
+        "sliplane servers autoscaling get",
+        "sliplane servers autoscaling set",
+        "sliplane servers autoscaling clear",
+        "sliplane postgres autoscaling get|set|clear",
+        "--max-instance-type",
+        "--dry-run",
+    ] {
+        assert!(md.contains(needed), "agent-readme does not mention {needed}");
+    }
+    assert!(!md.contains("cannot change it - use the dashboard"), "the old 'not supported' line is gone");
+}
+
+#[test]
+fn autoscaling_needs_an_account() {
+    let mock = mock_with(vec![]);
+    let env = Env::new(&mock);
+    let (code, _, err) = env.json(&["postgres", "autoscaling", "get", "--postgres-id", "pg_1"]);
+    assert_eq!(code, 7, "{err}");
+    assert!(mock.requests().is_empty());
 }

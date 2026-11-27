@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-online-success)](https://spacecorps.github.io/Sliplane-Cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Manage [Sliplane](https://sliplane.io) servers, services, PostgreSQL databases and S3 buckets from your terminal, or let an AI agent do it. A single static binary built in Rust, covering the whole Sliplane API (v0, OpenAPI spec 0.11.0).
+Manage [Sliplane](https://sliplane.io) servers, services, PostgreSQL databases and S3 buckets from your terminal, or let an AI agent do it. A single static binary built in Rust, covering the whole Sliplane API (v0, OpenAPI spec 0.13.0).
 
 ## Install
 
@@ -128,6 +128,9 @@ Wherever a command takes `--project-id`, `--service-id`, `--server-id`, `--postg
 | `sliplane servers metrics --server-id <id> [--range 1h \| --from <ts> --to <ts>]` | Query CPU, memory and disk utilization metrics |
 | `sliplane servers volumes --server-id <id>` | List attached persistent storage volumes |
 | `sliplane servers rename-volume --server-id <id> --volume-id <v> --name <n>` | Rename a volume (services are not redeployed) |
+| `sliplane servers autoscaling get --server-id <id>` | The autoscaling policy and its status, with the server's current tier and disk |
+| `sliplane servers autoscaling set --server-id <id> [--cpu-threshold <%> --cpu-minutes <m>] [--memory-...] [--disk-...] [--max-instance-type <t>] [--max-disk-gb <gb>] [--dry-run]` | Turn rules on or change them; everything not named is kept. Limits are checked against the catalog and the current size first. See below |
+| `sliplane servers autoscaling clear --server-id <id> [--dry-run]` | Turn every rule off; prints what it removed and an `undo` command |
 
 ### Services & Deployments
 
@@ -181,6 +184,7 @@ The dashboard's catalog of ready-made services (Postgres, Redis, n8n, Grafana, a
 | `sliplane postgres restore --postgres-id <id> [--timestamp <rfc3339>]` | Restore into a new database; without `--timestamp`, to the latest restorable point |
 | `sliplane postgres query --postgres-id <id> (--sql "<sql>" \| --file <path> \| --sql -) [--write] [--max-rows <n>] [--timeout 30s]` | Run SQL on the database and get the rows back as data (TLS, certificate verified, SCRAM). **Read-only unless `--write`.** Needs a key with `secrets:read`; see below |
 | `sliplane postgres connect --postgres-id <id>` | Open `psql` (16 or newer) on the database; the credentials go in its environment, never its arguments |
+| `sliplane postgres autoscaling get\|set\|clear --postgres-id <id> ...` | The same as `servers autoscaling`, for a database. A compute increase restarts Postgres |
 | `sliplane buckets list` | List S3-compatible object storage buckets |
 | `sliplane buckets create --name <n> --region <r>` | Create an S3 object storage bucket |
 | `sliplane buckets keys --bucket-id <id>` | List S3 access keys |
@@ -303,6 +307,11 @@ For web-based LLMs and crawlers, refer to [llms.txt](https://spacecorps.github.i
    - **The session is read-only unless you pass `--write`.** A write without it fails with SQLSTATE `25006` and an error that says to add `--write`. This is a guard against accidents, not a sandbox: SQL can lift it (`BEGIN READ WRITE`), so the database role's privileges are the real boundary.
    - Rows are data: `columns` (name, Postgres type, OID) and `rows` as objects. `bool`, `int2/4/8`, `float4/8`, `json` and `jsonb` become JSON values, `NULL` is `null`, and everything else - `numeric` included, so no precision is lost - is the text Postgres prints. A repeated column name gets a distinct key (`a`, `a_2`) and a warning. At most `--max-rows` (1000) rows are kept per statement; `rowCount` still counts all of them and `truncated` says so. `--timeout` (30s) is also the server's `statement_timeout`.
    - When nothing answers, the error points at the IP allow list: `sliplane postgres allowlist add --my-ip`. The database password and connection string never reach stdout, stderr or an error.
+8. **Autoscaling (`servers autoscaling`, `postgres autoscaling`)**:
+   - A policy has up to three rules (CPU, memory, disk), each a threshold (10-95 %) held for a number of minutes (1-60), and two limits: `--max-instance-type` (CPU and memory grow compute one tier at a time, within the current CPU family) and `--max-disk-gb` (disk). Increases are at least 15 minutes apart and keep the billing cycle. They cost money, and a Postgres compute increase restarts the database.
+   - The API replaces the whole policy on each write, so `set` reads it, applies only the flags you gave and sends all of it back. A rule that is off needs both its threshold and its minutes; `--no-cpu`, `--no-memory`, `--no-disk` turn one off; a `set` that would leave all of them off is refused in favour of `clear`.
+   - Before anything is sent, the limits are checked: a catalog tier and a catalog disk size (servers 50-1000 GB, Postgres 10-1000 GB), above the current tier and disk, and present when a rule needs them. `GET /postgres/{id}` does not report the database's tier, so for Postgres the API itself refuses a tier limit that leaves no room to grow.
+   - `--dry-run` prints the exact request and changes nothing. `clear` prints the removed policy and an `undo` command, and writes nothing when autoscaling is already off. `servers create` and `postgres create` do not take a policy: create first, then `autoscaling set`.
 
 ---
 

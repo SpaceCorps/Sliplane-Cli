@@ -50,6 +50,10 @@ on a real account (it costs money, so it is the owner's call) would settle each 
   what a blocked IP looks like on the wire.
 - Whether the API accepts a bare `nginx` as an image (we always send the full `docker.io/library/...`).
 - Clearing a field on update by sending an empty value (PARITY.md, **Open**).
+- `servers autoscaling set|clear` and `postgres autoscaling set|clear`: only GETs and `--dry-run` have been run
+  against the live API (spec 0.13.0, 2026-11-27). Unverified: that the API takes a body with only `autoscaling`
+  and without `maxInstanceType`/`maxDiskGb` when they are unused, what a server's 202 means for when the policy
+  is stored, and whether a policy write counts against the 10-per-hour rescale limit.
 - `sliplane update` across two real releases: v1.3.0 is the first with `checksums.txt`, so the first real
   update is v1.3.0 to the next one.
 
